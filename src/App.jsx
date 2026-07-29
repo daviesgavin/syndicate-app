@@ -2620,11 +2620,14 @@ function Home({ session, onCreate, onJoin, onSignIn, onSignOut, onProfile, onLeg
 
         <InstallAppButton />
 
+        {!session && (
+          <p className="text-[13px] text-[#9FB0AC] mb-3 text-center">Login or Register to start or join a Syndicate</p>
+        )}
         <div className="space-y-3 mb-8">
           {session ? (
             <Button variant="gold" icon={PlusCircle} onClick={onCreate}>Start a syndicate</Button>
           ) : (
-            <Button variant="gold" icon={LogIn} onClick={onSignIn}>Sign in to start a syndicate</Button>
+            <Button variant="gold" icon={LogIn} onClick={onSignIn}>Start a syndicate</Button>
           )}
           <Button variant="ghost" icon={ArrowRight} onClick={onJoin} full>
             <span className="text-[#F7F2E7]">Join with a code</span>
