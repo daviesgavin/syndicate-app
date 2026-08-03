@@ -673,6 +673,40 @@ async function loadIsAdmin(userId) {
   return true;
 }
 
+/* ---------------------------------------------------------
+   Comped (free-access) emails — admin can grant specific email
+   addresses free access that bypasses the Stripe fee entirely.
+--------------------------------------------------------- */
+
+async function isEmailComped(email) {
+  if (!email) return false;
+  const { data, error } = await supabase.from("comped_emails").select("email").eq("email", email.toLowerCase().trim()).maybeSingle();
+  if (error || !data) return false;
+  return true;
+}
+
+async function loadCompedEmails() {
+  const { data, error } = await supabase.from("comped_emails").select("email, added_at").order("added_at", { ascending: false });
+  if (error || !data) return [];
+  return data;
+}
+
+// Accepts a raw block of pasted text and adds every valid-looking email found in it
+// (comma, space, newline, or semicolon separated). Returns how many were added.
+async function addCompedEmails(rawText) {
+  const found = (rawText.match(/[^\s,;]+@[^\s,;]+\.[^\s,;]+/g) || []).map((e) => e.toLowerCase().trim());
+  const unique = [...new Set(found)];
+  if (unique.length === 0) return 0;
+  const { error } = await supabase.from("comped_emails").upsert(unique.map((email) => ({ email })), { onConflict: "email" });
+  if (error) throw error;
+  return unique.length;
+}
+
+async function removeCompedEmail(email) {
+  const { error } = await supabase.from("comped_emails").delete().eq("email", email);
+  if (error) throw error;
+}
+
 async function loadVisitorStats() {
   const now = new Date();
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -687,20 +721,31 @@ async function loadVisitorStats() {
     const { data } = await supabase.from("page_views").select("visitor_id").gte("created_at", sinceIso);
     return new Set((data || []).map((r) => r.visitor_id)).size;
   }
+  async function countAllTime() {
+    const { count } = await supabase.from("page_views").select("*", { count: "exact", head: true });
+    return count || 0;
+  }
+  async function uniqueAllTime() {
+    const { data } = await supabase.from("page_views").select("visitor_id");
+    return new Set((data || []).map((r) => r.visitor_id)).size;
+  }
 
-  const [dayViews, weekViews, monthViews, dayUnique, weekUnique, monthUnique] = await Promise.all([
+  const [dayViews, weekViews, monthViews, allTimeViews, dayUnique, weekUnique, monthUnique, allTimeUnique] = await Promise.all([
     countSince(startOfDay.toISOString()),
     countSince(startOfWeek.toISOString()),
     countSince(startOfMonth.toISOString()),
+    countAllTime(),
     uniqueSince(startOfDay.toISOString()),
     uniqueSince(startOfWeek.toISOString()),
     uniqueSince(startOfMonth.toISOString()),
+    uniqueAllTime(),
   ]);
 
   return {
     day: { views: dayViews, unique: dayUnique },
     week: { views: weekViews, unique: weekUnique },
     month: { views: monthViews, unique: monthUnique },
+    allTime: { views: allTimeViews, unique: allTimeUnique },
   };
 }
 
@@ -2140,6 +2185,52 @@ function AdminScreen({ session, onBack, onOpenSyndicate }) {
     setTimeout(() => setEmailsCopied(false), 2000);
   }
 
+  const [compedEmails, setCompedEmails] = useState([]);
+  const [compedLoading, setCompedLoading] = useState(true);
+  const [compedInput, setCompedInput] = useState("");
+  const [compedSaving, setCompedSaving] = useState(false);
+  const [compedError, setCompedError] = useState("");
+  const [compedRemoving, setCompedRemoving] = useState(null);
+
+  async function refreshCompedEmails() {
+    setCompedLoading(true);
+    try {
+      setCompedEmails(await loadCompedEmails());
+    } finally {
+      setCompedLoading(false);
+    }
+  }
+
+  useEffect(() => { refreshCompedEmails(); }, []);
+
+  async function handleGrantFreeAccess() {
+    setCompedSaving(true);
+    setCompedError("");
+    try {
+      const added = await addCompedEmails(compedInput);
+      if (added === 0) {
+        setCompedError("Couldn't find any valid email addresses in that text.");
+      } else {
+        setCompedInput("");
+        await refreshCompedEmails();
+      }
+    } catch (e) {
+      setCompedError(e.message || "Something went wrong granting free access.");
+    } finally {
+      setCompedSaving(false);
+    }
+  }
+
+  async function handleRevokeFreeAccess(email) {
+    setCompedRemoving(email);
+    try {
+      await removeCompedEmail(email);
+      await refreshCompedEmails();
+    } finally {
+      setCompedRemoving(null);
+    }
+  }
+
 
   async function checkStorageUsage() {
     setStorageLoading(true);
@@ -2221,15 +2312,22 @@ function AdminScreen({ session, onBack, onOpenSyndicate }) {
           {!visitorStats ? (
             <div className="flex items-center gap-2 text-[13px] text-[#8A968F]"><Loader2 size={14} className="animate-spin" />Loading…</div>
           ) : (
-            <div className="grid grid-cols-3 gap-2">
-              {[["Today", visitorStats.day], ["This week", visitorStats.week], ["This month", visitorStats.month]].map(([label, s]) => (
-                <div key={label} className="bg-[#F7F2E7] rounded-xl p-3">
-                  <div className="text-[10.5px] uppercase tracking-wide text-[#8A968F] mb-1">{label}</div>
-                  <div className="font-[Fraunces] text-[19px] text-[#10201D] font-medium leading-none mb-1">{s.views}</div>
-                  <div className="text-[10.5px] text-[#6B7A76]">{s.unique} unique</div>
-                </div>
-              ))}
-            </div>
+            <>
+              <div className="bg-[#10201D] rounded-xl p-3 mb-2">
+                <div className="text-[10.5px] uppercase tracking-wide text-[#C9982E] mb-1">All time</div>
+                <div className="font-[Fraunces] text-[22px] text-white font-medium leading-none mb-1">{visitorStats.allTime.views}</div>
+                <div className="text-[10.5px] text-[#A8A08C]">{visitorStats.allTime.unique} unique visitors</div>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                {[["Today", visitorStats.day], ["This week", visitorStats.week], ["This month", visitorStats.month]].map(([label, s]) => (
+                  <div key={label} className="bg-[#F7F2E7] rounded-xl p-3">
+                    <div className="text-[10.5px] uppercase tracking-wide text-[#8A968F] mb-1">{label}</div>
+                    <div className="font-[Fraunces] text-[19px] text-[#10201D] font-medium leading-none mb-1">{s.views}</div>
+                    <div className="text-[10.5px] text-[#6B7A76]">{s.unique} unique</div>
+                  </div>
+                ))}
+              </div>
+            </>
           )}
         </div>
 
@@ -2363,6 +2461,45 @@ function AdminScreen({ session, onBack, onOpenSyndicate }) {
               </div>
             </>
           )}
+        </div>
+
+        <div className="bg-white rounded-2xl p-4 mb-4">
+          <div className="flex items-center gap-1.5 text-[#6B7A76] text-[11px] uppercase tracking-wide mb-2"><ShieldCheck size={12} />Free access (bypass Stripe)</div>
+          <p className="text-[12px] text-[#8A968F] mb-3">Paste one or more registered email addresses (comma, space, or newline separated). Anyone on this list skips the $3 fee entirely, for every syndicate they create or roll over.</p>
+          <textarea
+            className="w-full text-[13px] rounded-xl border border-[#E5E0D0] px-3 py-2 mb-2 min-h-[70px] font-[JetBrains_Mono]"
+            placeholder="friend@example.com, another@example.com"
+            value={compedInput}
+            onChange={(e) => setCompedInput(e.target.value)}
+          />
+          {compedError && <div className="flex items-center gap-2 text-[#C1473A] text-[12px] mb-2"><AlertCircle size={13} />{compedError}</div>}
+          <Button onClick={handleGrantFreeAccess} disabled={compedSaving || !compedInput.trim()} icon={compedSaving ? Loader2 : PlusCircle}>{compedSaving ? "Adding…" : "Grant free access"}</Button>
+
+          <div className="mt-4 pt-4 border-t border-[#F0EBDC]">
+            {compedLoading ? (
+              <div className="flex items-center gap-2 text-[13px] text-[#8A968F]"><Loader2 size={14} className="animate-spin" />Loading…</div>
+            ) : compedEmails.length === 0 ? (
+              <p className="text-[12.5px] text-[#8A968F]">No one has free access yet.</p>
+            ) : (
+              <>
+                <p className="text-[11px] uppercase tracking-wide text-[#8A968F] mb-2">{compedEmails.length} with free access</p>
+                <div className="max-h-48 overflow-y-auto space-y-1.5">
+                  {compedEmails.map((c) => (
+                    <div key={c.email} className="flex items-center justify-between bg-[#F7F2E7] rounded-lg px-3 py-2">
+                      <span className="text-[12.5px] text-[#3E5652] font-[JetBrains_Mono] truncate mr-2">{c.email}</span>
+                      <button
+                        onClick={() => handleRevokeFreeAccess(c.email)}
+                        disabled={compedRemoving === c.email}
+                        className="text-[#C1473A] shrink-0"
+                      >
+                        {compedRemoving === c.email ? <Loader2 size={14} className="animate-spin" /> : <X size={14} />}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
         </div>
 
         <div className="bg-white rounded-2xl p-4 mb-4">
@@ -3058,7 +3195,7 @@ function Home({ session, onCreate, onJoin, onSignIn, onSignOut, onProfile, onLeg
    Organiser — create
 --------------------------------------------------------- */
 
-function CreatePool({ session, onBack }) {
+function CreatePool({ session, onBack, onCreated }) {
   const [name, setName] = useState("");
   const [jackpot, setJackpot] = useState("");
   const [drawDate, setDrawDate] = useState("");
@@ -3067,6 +3204,7 @@ function CreatePool({ session, onBack }) {
   const [country, setCountry] = useState("AU");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [comped, setComped] = useState(false); // true once we've confirmed this account has free access
 
   useEffect(() => {
     try {
@@ -3080,6 +3218,12 @@ function CreatePool({ session, onBack }) {
       }
     } catch (e) {}
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    isEmailComped(session.user.email).then((v) => { if (!cancelled) setComped(v); });
+    return () => { cancelled = true; };
+  }, [session.user.email]);
 
   const missing = [];
   if (!name.trim()) missing.push("syndicate name");
@@ -3103,6 +3247,17 @@ function CreatePool({ session, onBack }) {
         ownerId: session.user.id,
         country,
       };
+
+      // Accounts an admin has granted free access to skip Stripe entirely and get
+      // created immediately — re-check live (not just the on-mount value) so this
+      // can't be stale if access was granted/revoked in another tab.
+      const isComped = await isEmailComped(session.user.email);
+      if (isComped) {
+        const code = await createPool(draft);
+        onCreated(code);
+        return;
+      }
+
       localStorage.setItem("pendingSyndicate", JSON.stringify(draft));
 
       const res = await fetch("/api/create-checkout-session", {
@@ -3151,12 +3306,21 @@ function CreatePool({ session, onBack }) {
           <Lock size={16} className="mt-0.5 shrink-0 text-[#8A6A15]" />
           <span>Only share your invite code with people you know personally — friends, family, or workmates. Real money changes hands between your group.</span>
         </div>
-        <div className="bg-[#10201D]/5 rounded-xl px-4 py-3 text-[13px] text-[#5B6B67] leading-relaxed mb-6 flex gap-2">
-          <Landmark size={16} className="mt-0.5 shrink-0 text-[#5B6B67]" />
-          <span>Creating a syndicate has a one-time $3.00 AUD service fee, paid securely via Stripe. This covers using the app only — never your ticket money.</span>
-        </div>
+        {comped ? (
+          <div className="bg-[#2F6F5E]/8 rounded-xl px-4 py-3 text-[13px] text-[#2F6F5E] leading-relaxed mb-6 flex gap-2">
+            <ShieldCheck size={16} className="mt-0.5 shrink-0 text-[#2F6F5E]" />
+            <span>Your account has free access — no payment needed to create this syndicate.</span>
+          </div>
+        ) : (
+          <div className="bg-[#10201D]/5 rounded-xl px-4 py-3 text-[13px] text-[#5B6B67] leading-relaxed mb-6 flex gap-2">
+            <Landmark size={16} className="mt-0.5 shrink-0 text-[#5B6B67]" />
+            <span>Creating a syndicate has a one-time $3.00 AUD service fee, paid securely via Stripe. This covers using the app only — never your ticket money.</span>
+          </div>
+        )}
         {error && <div className="flex items-center gap-2 text-[#C1473A] text-[13px] mb-4"><AlertCircle size={15} /> {error}</div>}
-        <Button onClick={handlePayAndCreate} disabled={saving} icon={saving ? Loader2 : ArrowRight}>{saving ? "Redirecting to payment…" : "Pay $3 & create syndicate"}</Button>
+        <Button onClick={handlePayAndCreate} disabled={saving} icon={saving ? Loader2 : ArrowRight}>
+          {saving ? (comped ? "Creating…" : "Redirecting to payment…") : (comped ? "Create syndicate (free access)" : "Pay $3 & create syndicate")}
+        </Button>
       </div>
     </Screen>
   );
@@ -3823,7 +3987,7 @@ function ViewPool({ code, session, onBack, onChat }) {
    Organiser dashboard
 --------------------------------------------------------- */
 
-function Dashboard({ session, code, onBack, onSignIn, isAdmin }) {
+function Dashboard({ session, code, onBack, onSignIn, isAdmin, onNavigateCode }) {
   const [pool, setPool] = useState(null);
   const [copied, setCopied] = useState(false);
   const [showResults, setShowResults] = useState(false);
@@ -4251,24 +4415,32 @@ function Dashboard({ session, code, onBack, onSignIn, isAdmin }) {
     setRolloverSaving(true);
     setRolloverError("");
     try {
-      const draft = {
-        oldPool: {
-          code: pool.code,
-          name: pool.name,
-          organiser: pool.organiser,
-          actualWinnings: pool.actualWinnings,
-          participants: pool.participants.map((p) => ({ name: p.name, amount: p.amount, userId: p.userId })),
-        },
-        options: {
-          jackpot: Number(rolloverJackpot),
-          drawDate: rolloverDrawDate,
-          entryDeadline: rolloverDeadline ? new Date(rolloverDeadline).toISOString() : null,
-          carryMembers: rolloverCarry,
-          carryPaymentDetails: rolloverCarryPayment,
-          ownerId: session.user.id,
-        },
+      const oldPool = {
+        code: pool.code,
+        name: pool.name,
+        organiser: pool.organiser,
+        actualWinnings: pool.actualWinnings,
+        participants: pool.participants.map((p) => ({ name: p.name, amount: p.amount, userId: p.userId })),
       };
-      localStorage.setItem("pendingRollover", JSON.stringify(draft));
+      const options = {
+        jackpot: Number(rolloverJackpot),
+        drawDate: rolloverDrawDate,
+        entryDeadline: rolloverDeadline ? new Date(rolloverDeadline).toISOString() : null,
+        carryMembers: rolloverCarry,
+        carryPaymentDetails: rolloverCarryPayment,
+        ownerId: session.user.id,
+      };
+
+      // Accounts an admin has granted free access to skip Stripe entirely here too.
+      const isComped = await isEmailComped(session.user.email);
+      if (isComped) {
+        const newCode = await rolloverSyndicate(oldPool, options);
+        setShowRollover(false);
+        onNavigateCode(newCode);
+        return;
+      }
+
+      localStorage.setItem("pendingRollover", JSON.stringify({ oldPool, options }));
 
       const res = await fetch("/api/create-checkout-session", {
         method: "POST",
@@ -5059,7 +5231,7 @@ export default function App() {
   }
 
   if (route.name === "dashboard") {
-    return <Dashboard key={route.code} session={session} code={route.code} onBack={goHome} onSignIn={requestSignIn} isAdmin={isAdmin} />;
+    return <Dashboard key={route.code} session={session} code={route.code} onBack={goHome} onSignIn={requestSignIn} isAdmin={isAdmin} onNavigateCode={goDashboard} />;
   }
 
   if (route.name === "create-success") {
@@ -5152,7 +5324,7 @@ export default function App() {
   }
   if (subRoute === "create") {
     if (!session) return <SignIn onBack={() => setSubRoute(null)} />;
-    return <CreatePool session={session} onBack={() => setSubRoute(null)} />;
+    return <CreatePool session={session} onBack={() => setSubRoute(null)} onCreated={(code) => { setSubRoute(null); goDashboard(code); }} />;
   }
   return (
     <Home
