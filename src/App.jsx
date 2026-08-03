@@ -1,11 +1,26 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "./supabaseClient";
+import { Capacitor } from "@capacitor/core";
+import { App as CapacitorApp } from "@capacitor/app";
 import {
   Ticket, Users, Copy, Check, ArrowRight, ArrowLeft, PlusCircle, ImageOff, LogOut, HardDrive, MapPin, Mail, Star, Globe,
   TrendingUp, Trophy, Clock, Share2, Loader2, ShieldCheck,
   AlertCircle, ChevronRight, Sparkles, ImagePlus, X, Images, Eye, RefreshCw,
   LogIn, Lock, MessageCircle, Send, UserCircle, CheckSquare, Square, Trash2, Landmark, Download, PlusSquare, Smartphone, Pencil, UserX, BookOpen, UserPlus
 } from "lucide-react";
+
+// Custom URL scheme registered in Xcode (Target -> Info -> URL Types) so magic-link
+// emails can hand control back to the native app instead of failing in Safari.
+const NATIVE_AUTH_REDIRECT = "app.lottosyndicate://auth-callback";
+
+// Your real hosted web address. Used for "invite a friend" share links instead of
+// window.location.origin, because inside the native app that resolves to
+// capacitor://localhost — a link nobody outside the app could ever open.
+// TODO: double-check this matches your actual live domain.
+const PROD_WEB_ORIGIN = "https://lottosyndicate.app";
+function shareOrigin() {
+  return Capacitor.isNativePlatform() ? PROD_WEB_ORIGIN : window.location.origin;
+}
 
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 function genCode(len = 5) {
@@ -247,9 +262,10 @@ function compressImageToBlob(file, maxDim = 1400, quality = 0.72) {
 --------------------------------------------------------- */
 
 async function sendMagicLink(email) {
+  const redirectTo = Capacitor.isNativePlatform() ? NATIVE_AUTH_REDIRECT : window.location.origin;
   const { error } = await supabase.auth.signInWithOtp({
     email,
-    options: { emailRedirectTo: window.location.origin },
+    options: { emailRedirectTo: redirectTo },
   });
   if (error) throw error;
 }
@@ -1087,7 +1103,10 @@ function Screen({ children, dark }) {
 
 function TopBar({ title, onBack, dark, right }) {
   return (
-    <div className={`sticky top-0 z-20 flex items-center justify-between px-5 pt-6 pb-4 ${dark ? "bg-[#10201D] text-[#F7F2E7]" : "bg-[#F7F2E7] text-[#10201D]"}`}>
+    <div
+      className={`sticky top-0 z-20 flex items-center justify-between px-5 pb-4 ${dark ? "bg-[#10201D] text-[#F7F2E7]" : "bg-[#F7F2E7] text-[#10201D]"}`}
+      style={{ paddingTop: "calc(1.5rem + env(safe-area-inset-top, 0px))" }}
+    >
       <button onClick={onBack} className={`w-9 h-9 rounded-full flex items-center justify-center ${onBack ? "opacity-100" : "opacity-0 pointer-events-none"} ${dark ? "bg-white/10" : "bg-black/5"}`} aria-label="Back">
         <ArrowLeft size={18} />
       </button>
@@ -1257,6 +1276,11 @@ function SignIn({ onBack }) {
 
   async function handleSend() {
     if (!email.trim()) return;
+    // Release the keyboard/text-input session before this field disappears from the
+    // screen — on iOS WKWebView, swapping screens while a field is still focused can
+    // leave the native text-input session stuck, which can swallow taps afterwards
+    // (including the "Check your email" screen's back button).
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     setSending(true);
     setError("");
     try {
@@ -1589,7 +1613,7 @@ function ChatRoom({ session, code, poolName, onBack, onSignIn }) {
         ))}
         <div ref={bottomRef} />
       </div>
-      <div className="px-4 pb-4 pt-2 sticky bottom-0 bg-[#F7F2E7]">
+      <div className="px-4 pt-2 sticky bottom-0 bg-[#F7F2E7]" style={{ paddingBottom: "calc(1rem + env(safe-area-inset-bottom, 0px))" }}>
         {error && <div className="flex items-center gap-2 text-[#C1473A] text-[12.5px] mb-2"><AlertCircle size={13} />{error}</div>}
         {session ? (
           <form
@@ -3667,7 +3691,7 @@ function ViewPool({ code, session, onBack, onChat }) {
   }
 
   async function handleShare() {
-    const url = `${window.location.origin}/#/j/${code}`;
+    const url = `${shareOrigin()}/#/j/${code}`;
     const text = `Join my lotto syndicate${pool?.name ? ` "${pool.name}"` : ""} on Syndicate — use code ${code}`;
     if (navigator.share) {
       try {
@@ -4143,7 +4167,7 @@ function Dashboard({ session, code, onBack, onSignIn, isAdmin }) {
     try { await navigator.clipboard.writeText(pool.code); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch (e) {}
   }
   async function handleShare() {
-    const text = `Join "${pool.name}" — use code ${pool.code} in the Syndicate app: ${window.location.origin}${window.location.pathname}#/j/${pool.code}`;
+    const text = `Join "${pool.name}" — use code ${pool.code} in the Syndicate app: ${shareOrigin()}/#/j/${pool.code}`;
     if (navigator.share) { try { await navigator.share({ text }); } catch (e) {} } else { handleCopy(); }
   }
   async function handlePhotoSelect(e) {
@@ -4938,6 +4962,31 @@ export default function App() {
       setSession(newSession);
     });
     return () => listener.subscription.unsubscribe();
+  }, []);
+
+  // Native only: catch the app.lottosyndicate://auth-callback link the OS hands back
+  // to us after someone taps a magic-link email, and finish signing them in.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    const listenerPromise = CapacitorApp.addListener("appUrlOpen", async ({ url }) => {
+      try {
+        const parsed = new URL(url);
+        const hashParams = new URLSearchParams(
+          parsed.hash && parsed.hash.startsWith("#") ? parsed.hash.slice(1) : parsed.hash
+        );
+        const access_token = hashParams.get("access_token");
+        const refresh_token = hashParams.get("refresh_token");
+        const code = parsed.searchParams.get("code");
+        if (access_token && refresh_token) {
+          await supabase.auth.setSession({ access_token, refresh_token });
+        } else if (code) {
+          await supabase.auth.exchangeCodeForSession(code);
+        }
+      } catch (e) {
+        console.error("Deep link sign-in failed:", e);
+      }
+    });
+    return () => { listenerPromise.then((l) => l.remove()); };
   }, []);
 
   useEffect(() => {
