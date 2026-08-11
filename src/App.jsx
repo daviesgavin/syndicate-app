@@ -2988,25 +2988,20 @@ function Home({ session, onCreate, onJoin, onSignIn, onSignOut, onProfile, onLeg
           <span>Now used by groups across Australia, the USA, Canada, England, Scotland, Wales &amp; Ireland</span>
         </div>
 
-        <button onClick={onGuide} className="flex items-center gap-3 bg-[#C9982E]/12 hover:bg-[#C9982E]/18 border border-[#C9982E]/30 rounded-xl px-4 py-3.5 mb-6">
+        <a
+          href="/syndicate-guide.pdf"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-3 bg-[#C9982E]/12 hover:bg-[#C9982E]/18 border border-[#C9982E]/30 rounded-xl px-4 py-3.5 mb-6"
+        >
           <div className="w-9 h-9 rounded-lg bg-[#C9982E]/20 flex items-center justify-center shrink-0">
             <BookOpen size={17} className="text-[#C9982E]" />
           </div>
           <div className="flex-1 text-left">
             <div className="text-[#F7F2E7] text-[13.5px] font-medium">See how it works</div>
-            <div className="text-[#C9C0A5] text-[11.5px]">A 1-minute guide — it's this easy</div>
+            <div className="text-[#C9C0A5] text-[11.5px]">Getting-started guide (PDF)</div>
           </div>
           <ChevronRight size={16} className="text-[#C9982E]" />
-        </button>
-
-        <a
-          href="/syndicate-guide.pdf"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center justify-center gap-1.5 text-[11.5px] text-[#8FA09B] hover:text-[#C9982E] mb-6 -mt-3"
-        >
-          <Download size={12} />
-          Download the getting-started guide (PDF)
         </a>
 
         {session && (
