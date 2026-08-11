@@ -2999,6 +2999,16 @@ function Home({ session, onCreate, onJoin, onSignIn, onSignOut, onProfile, onLeg
           <ChevronRight size={16} className="text-[#C9982E]" />
         </button>
 
+        <a
+          href="/syndicate-guide.pdf"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center justify-center gap-1.5 text-[11.5px] text-[#8FA09B] hover:text-[#C9982E] mb-6 -mt-3"
+        >
+          <Download size={12} />
+          Download the getting-started guide (PDF)
+        </a>
+
         {session && (
           <button onClick={onProfile} className="flex items-center gap-3 bg-white/5 hover:bg-white/10 rounded-xl px-4 py-3 mb-6">
             <Avatar url={profile?.avatar_url} name={profile?.nickname || session.user.email} size={38} />
