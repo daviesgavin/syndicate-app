@@ -1821,7 +1821,11 @@ function HowItWorksDemo() {
   );
 }
 
-function InstallAppButton() {
+function InstallAppButton({
+  title = "Add Syndicate to your home screen",
+  subtitle = "Opens like a regular app, one tap away",
+  prominent = false,
+}) {
   const [deferredPrompt, setDeferredPrompt] = useState(null);
   const [isStandalone, setIsStandalone] = useState(false);
   const [isIOS, setIsIOS] = useState(false);
@@ -1860,15 +1864,22 @@ function InstallAppButton() {
 
   return (
     <>
-      <button onClick={handleClick} className="w-full flex items-center gap-3 bg-white/5 hover:bg-white/10 rounded-xl px-4 py-3.5 mb-6 text-left">
-        <div className="w-9 h-9 rounded-lg bg-[#C9982E]/15 flex items-center justify-center shrink-0">
+      <button
+        onClick={handleClick}
+        className={
+          prominent
+            ? "w-full flex items-center gap-3 bg-[#C9982E]/12 hover:bg-[#C9982E]/18 border border-[#C9982E]/30 rounded-xl px-4 py-3.5 mb-6 text-left"
+            : "w-full flex items-center gap-3 bg-white/5 hover:bg-white/10 rounded-xl px-4 py-3.5 mb-6 text-left"
+        }
+      >
+        <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${prominent ? "bg-[#C9982E]/20" : "bg-[#C9982E]/15"}`}>
           <Smartphone size={17} className="text-[#C9982E]" />
         </div>
         <div className="flex-1">
-          <div className="text-[#F7F2E7] text-[13.5px] font-medium">Add Syndicate to your home screen</div>
-          <div className="text-[#7C8C88] text-[11.5px]">Opens like a regular app, one tap away</div>
+          <div className="text-[#F7F2E7] text-[13.5px] font-medium">{title}</div>
+          <div className={prominent ? "text-[#C9C0A5] text-[11.5px]" : "text-[#7C8C88] text-[11.5px]"}>{subtitle}</div>
         </div>
-        <PlusSquare size={17} className="text-[#7C8C88]" />
+        {prominent ? <ChevronRight size={16} className="text-[#C9982E]" /> : <PlusSquare size={17} className="text-[#7C8C88]" />}
       </button>
 
       {showIOSHelp && (
@@ -2987,6 +2998,8 @@ function Home({ session, onCreate, onJoin, onSignIn, onSignOut, onProfile, onLeg
           <Globe size={13} className="text-[#C9982E] shrink-0" />
           <span>Now used by groups across Australia, the USA, Canada, England, Scotland, Wales &amp; Ireland</span>
         </div>
+
+        <InstallAppButton title="Add app to your phone screen" subtitle="Opens like a regular app, one tap away" prominent />
 
         <a
           href="/syndicate-guide.pdf"
