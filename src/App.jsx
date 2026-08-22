@@ -3028,8 +3028,6 @@ function Home({ session, onCreate, onJoin, onSignIn, onSignOut, onProfile, onLeg
           </button>
         )}
 
-        <InstallAppButton />
-
         <div className="space-y-3 mb-8">
           {session ? (
             <Button variant="gold" icon={PlusCircle} onClick={onCreate}>Start a syndicate</Button>
