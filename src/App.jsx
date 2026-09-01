@@ -957,44 +957,75 @@ async function removeResultPhoto(id) {
   if (before?.syndicate_code) await logActivity(before.syndicate_code, "A results/winnings photo was removed.");
 }
 
-async function rolloverSyndicate(oldPool, { jackpot, drawDate, entryDeadline, carryMembers, carryPaymentDetails, ownerId }) {
+async function rolloverSyndicate(oldPool, { newName, jackpot, drawDate, entryDeadline, carryMembers, carryPaymentDetails, ownerId }) {
   const newCode = await createPool({
-    name: oldPool.name,
+    name: (newName || oldPool.name || "").trim() || oldPool.name,
     organiser: oldPool.organiser,
     jackpot,
     drawDate,
     entryDeadline,
     ownerId,
   });
-  await supabase.from("syndicates").update({ rolled_over_from: oldPool.code, rollover_amount: oldPool.actualWinnings }).eq("code", newCode);
-  await supabase.from("syndicates").update({ rolled_forward_to: newCode }).eq("code", oldPool.code);
+
+  // Everything below is independent (different rows/tables, or additive log rows), so it
+  // runs concurrently instead of one sequential round trip after another — that serial
+  // chain (especially one insert + one log write PER participant) is what made rollover
+  // take 15+ seconds for a syndicate with a lot of members.
+  const tasks = [
+    supabase.from("syndicates").update({ rolled_over_from: oldPool.code, rollover_amount: oldPool.actualWinnings }).eq("code", newCode),
+    supabase.from("syndicates").update({ rolled_forward_to: newCode }).eq("code", oldPool.code),
+  ];
 
   if (carryPaymentDetails) {
-    const oldDetails = await loadPaymentDetails(oldPool.code);
-    if (oldDetails) {
-      await savePaymentDetails(newCode, {
-        bankName: oldDetails.bank_name, accountName: oldDetails.account_name,
-        bsb: oldDetails.bsb, accountNumber: oldDetails.account_number, payid: oldDetails.payid,
-      });
-      await logActivity(newCode, `Payment details carried over from ${oldPool.code}.`);
-    }
+    tasks.push((async () => {
+      const oldDetails = await loadPaymentDetails(oldPool.code);
+      if (oldDetails) {
+        await savePaymentDetails(newCode, {
+          bankName: oldDetails.bank_name, accountName: oldDetails.account_name,
+          bsb: oldDetails.bsb, accountNumber: oldDetails.account_number, payid: oldDetails.payid,
+        });
+        await logActivity(newCode, `Payment details carried over from ${oldPool.code}.`);
+      }
+    })());
   }
+
+  const activityMessages = [
+    { syndicate_code: newCode, message: `Syndicate rolled over from ${oldPool.code} — ${money(oldPool.actualWinnings || 0)} total winnings carried in.` },
+    { syndicate_code: oldPool.code, message: `Rolled forward into new syndicate ${newCode}.` },
+  ];
 
   if (carryMembers) {
     const oldTotal = oldPool.participants.reduce((s, p) => s + Number(p.amount || 0), 0);
     const winnings = Number(oldPool.actualWinnings || 0);
-    for (const p of oldPool.participants) {
+    const rolled = oldPool.participants.map((p) => {
       const share = oldTotal ? Number(p.amount || 0) / oldTotal : 0;
       const rolledAmount = Math.round(share * winnings * 100) / 100; // each person's proportional share of the actual winnings
-      await supabase.from("participants").insert({
-        syndicate_code: newCode, name: p.name, amount: rolledAmount, user_id: p.userId || null,
-        fee: 0, paid: true, paid_at: new Date().toISOString(), // already "paid" — it's their own winnings, not new money owed
-      });
-      await logActivity(newCode, `${p.name} rolled over ${money(rolledAmount)} from ${oldPool.code} (${oldPool.name}).`);
-    }
+      return { p, rolledAmount };
+    });
+
+    // One bulk insert for every participant instead of one insert per participant.
+    tasks.push(
+      supabase.from("participants").insert(
+        rolled.map(({ p, rolledAmount }) => ({
+          syndicate_code: newCode, name: p.name, amount: rolledAmount, user_id: p.userId || null,
+          fee: 0, paid: true, paid_at: new Date().toISOString(), // already "paid" — it's their own winnings, not new money owed
+        }))
+      )
+    );
+
+    rolled.forEach(({ p, rolledAmount }) => {
+      activityMessages.push({ syndicate_code: newCode, message: `${p.name} rolled over ${money(rolledAmount)} from ${oldPool.code} (${oldPool.name}).` });
+    });
   }
-  await logActivity(newCode, `Syndicate rolled over from ${oldPool.code} — ${money(oldPool.actualWinnings || 0)} total winnings carried in.`);
-  await logActivity(oldPool.code, `Rolled forward into new syndicate ${newCode}.`);
+
+  // One bulk insert for every log line — activity logging is non-fatal, same as logActivity().
+  tasks.push(
+    supabase.from("activity_log").insert(activityMessages).then(({ error }) => {
+      if (error) console.error("Activity log failed (non-fatal):", error);
+    })
+  );
+
+  await Promise.all(tasks);
   return newCode;
 }
 
@@ -1234,9 +1265,12 @@ function PhotoLightbox({ photos, index, onClose, onIndexChange }) {
   const photo = photos[index];
   return (
     <div className="fixed inset-0 z-40 bg-black/90 flex flex-col" onClick={onClose}>
-      <div className="flex items-center justify-between px-5 pt-6 pb-3">
+      <div
+        className="flex items-center justify-between pl-5 pr-8 pb-3"
+        style={{ paddingTop: "calc(2.75rem + env(safe-area-inset-top, 0px))" }}
+      >
         <span className="text-[#D8D0BC] text-[12.5px] font-[JetBrains_Mono]">{index + 1} / {photos.length}</span>
-        <button onClick={onClose} className="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center text-white"><X size={17} /></button>
+        <button onClick={onClose} className="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center text-white shrink-0" aria-label="Close"><X size={17} /></button>
       </div>
       <div className="flex-1 flex items-center justify-center px-4" onClick={(e) => e.stopPropagation()}>
         <img src={photo.url} alt="Lotto ticket" className="max-h-full max-w-full rounded-lg object-contain" />
@@ -3307,8 +3341,16 @@ function CreatePool({ session, onBack, onCreated }) {
           </select>
         </Field>
         <Field label="Jackpot estimate *">
-          <div className="relative"><span className="absolute left-4 top-1/2 -translate-y-1/2 text-[#A8A08C]">{COUNTRIES[country].symbol}</span>
-            <input className={`${inputCls} pl-7`} inputMode="decimal" placeholder="40,000,000" value={jackpot} onChange={(e) => setJackpot(e.target.value.replace(/[^0-9.]/g, ""))} /></div>
+          <div className="w-full rounded-xl border border-[#E1DAC6] bg-white px-4 py-3 flex items-center gap-1 focus-within:ring-2 focus-within:ring-[#2F6F5E]/40 focus-within:border-[#2F6F5E]">
+            <span className="text-[#A8A08C] text-[15px] shrink-0">{COUNTRIES[country].symbol}</span>
+            <input
+              className="flex-1 min-w-0 bg-transparent text-[15px] text-[#10201D] placeholder-[#A8A08C] focus:outline-none"
+              inputMode="decimal"
+              placeholder="40,000,000"
+              value={jackpot}
+              onChange={(e) => setJackpot(e.target.value.replace(/[^0-9.]/g, ""))}
+            />
+          </div>
         </Field>
         <Field label="Draw date (optional)"><input type="date" className={inputCls} value={drawDate} onChange={(e) => setDrawDate(e.target.value)} /></Field>
         <Field label="Entry deadline (optional)">
@@ -4015,6 +4057,7 @@ function Dashboard({ session, code, onBack, onSignIn, isAdmin, onNavigateCode })
   const [showActivityLog, setShowActivityLog] = useState(false);
   const [showReviewModal, setShowReviewModal] = useState(false);
   const [showRollover, setShowRollover] = useState(false);
+  const [rolloverName, setRolloverName] = useState("");
   const [rolloverJackpot, setRolloverJackpot] = useState("");
   const [rolloverDrawDate, setRolloverDrawDate] = useState("");
   const [rolloverDeadline, setRolloverDeadline] = useState("");
@@ -4439,6 +4482,7 @@ function Dashboard({ session, code, onBack, onSignIn, isAdmin, onNavigateCode })
         participants: pool.participants.map((p) => ({ name: p.name, amount: p.amount, userId: p.userId })),
       };
       const options = {
+        newName: (rolloverName || pool.name).trim() || pool.name,
         jackpot: Number(rolloverJackpot),
         drawDate: rolloverDrawDate,
         entryDeadline: rolloverDeadline ? new Date(rolloverDeadline).toISOString() : null,
@@ -4573,25 +4617,29 @@ function Dashboard({ session, code, onBack, onSignIn, isAdmin, onNavigateCode })
         {resultUploadError && <div className="flex items-center gap-2 text-[#C1473A] text-[13px] mb-2"><AlertCircle size={14} />{resultUploadError}</div>}
         <div className="mb-5"><PhotoGallery photos={pool.resultPhotos} editable onRemove={handleResultPhotoRemove} emptyHint="Add a photo once you have a result or proof of a payout." /></div>
 
-        <div className="grid grid-cols-2 gap-3 mb-5">
-          <div className="bg-white rounded-2xl p-4">
-            <div className="flex items-center justify-between mb-1">
-              <div className="flex items-center gap-1.5 text-[#6B7A76] text-[11px] uppercase tracking-wide"><Trophy size={12} className="text-[#C9982E]" />Jackpot</div>
-              <button onClick={openEditJackpot} className="text-[#6B7A76]"><Pencil size={13} /></button>
+        <div className="mb-5 space-y-3">
+          <div className="grid grid-cols-[3fr_2fr] gap-3">
+            <div className="bg-white rounded-2xl p-4">
+              <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center gap-1.5 text-[#6B7A76] text-[11px] uppercase tracking-wide"><Trophy size={12} className="text-[#C9982E]" />Jackpot</div>
+                <button onClick={openEditJackpot} className="text-[#6B7A76]"><Pencil size={13} /></button>
+              </div>
+              <div className="font-[Fraunces] text-[19px] text-[#10201D] font-medium truncate">{money(pool.jackpot, COUNTRIES[pool.country]?.currency)}</div>
             </div>
-            <div className="font-[Fraunces] text-[19px] text-[#10201D] font-medium">{money(pool.jackpot, COUNTRIES[pool.country]?.currency)}</div>
+            <div className="bg-white rounded-2xl p-4">
+              <div className="flex items-center gap-1.5 text-[#6B7A76] text-[11px] uppercase tracking-wide mb-1"><Users size={12} />Participants</div>
+              <div className="font-[Fraunces] text-[19px] text-[#10201D] font-medium">{pool.participants.length}</div>
+            </div>
           </div>
-          <div className="bg-white rounded-2xl p-4">
-            <div className="flex items-center gap-1.5 text-[#6B7A76] text-[11px] uppercase tracking-wide mb-1"><Users size={12} />Participants</div>
-            <div className="font-[Fraunces] text-[19px] text-[#10201D] font-medium">{pool.participants.length}</div>
-          </div>
-          <div className="bg-white rounded-2xl p-4">
-            <div className="flex items-center gap-1.5 text-[#6B7A76] text-[11px] uppercase tracking-wide mb-1"><Ticket size={12} />Total pool</div>
-            <div className="font-[JetBrains_Mono] text-[17px] text-[#10201D] font-medium">{money(totalAmount, COUNTRIES[pool.country]?.currency)}</div>
-          </div>
-          <div className="bg-white rounded-2xl p-4">
-            <div className="flex items-center gap-1.5 text-[#6B7A76] text-[11px] uppercase tracking-wide mb-1"><TrendingUp size={12} />Confirmed received</div>
-            <div className="font-[JetBrains_Mono] text-[17px] text-[#2F6F5E] font-medium">{money(confirmed)}</div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="bg-white rounded-2xl p-4">
+              <div className="flex items-center gap-1.5 text-[#6B7A76] text-[11px] uppercase tracking-wide mb-1"><Ticket size={12} />Total pool</div>
+              <div className="font-[JetBrains_Mono] text-[17px] text-[#10201D] font-medium">{money(totalAmount, COUNTRIES[pool.country]?.currency)}</div>
+            </div>
+            <div className="bg-white rounded-2xl p-4">
+              <div className="flex items-center gap-1.5 text-[#6B7A76] text-[11px] uppercase tracking-wide mb-1"><TrendingUp size={12} />Confirmed received</div>
+              <div className="font-[JetBrains_Mono] text-[17px] text-[#2F6F5E] font-medium">{money(confirmed)}</div>
+            </div>
           </div>
         </div>
 
@@ -4612,7 +4660,7 @@ function Dashboard({ session, code, onBack, onSignIn, isAdmin, onNavigateCode })
                 <ChevronRight size={17} />
               </a>
             ) : (
-              <button onClick={() => setShowRollover(true)} className="w-full flex items-center justify-between bg-[#C9982E]/12 text-[#8A6A15] rounded-2xl px-5 py-4 mb-5 border border-[#C9982E]/30">
+              <button onClick={() => { setRolloverName(pool.name); setShowRollover(true); }} className="w-full flex items-center justify-between bg-[#C9982E]/12 text-[#8A6A15] rounded-2xl px-5 py-4 mb-5 border border-[#C9982E]/30">
                 <span className="flex items-center gap-2 text-[14.5px] font-medium"><Sparkles size={16} />Roll winnings into a new syndicate</span>
                 <ChevronRight size={17} />
               </button>
@@ -4765,7 +4813,8 @@ function Dashboard({ session, code, onBack, onSignIn, isAdmin, onNavigateCode })
           <div className="w-full max-w-[430px] bg-[#F7F2E7] rounded-t-3xl p-6 pb-8 max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="w-10 h-1 rounded-full bg-[#D8D0BC] mx-auto mb-5" />
             <h3 className="font-[Fraunces] text-[19px] text-[#10201D] font-medium mb-1">Roll winnings forward</h3>
-            <p className="text-[13px] text-[#6B7A76] mb-4">Starts a new "{pool.name}" syndicate with {money(pool.actualWinnings, COUNTRIES[pool.country]?.currency)} noted as rolled over. A $3.00 AUD service fee applies, same as creating any syndicate.</p>
+            <p className="text-[13px] text-[#6B7A76] mb-4">Starts a new syndicate with {money(pool.actualWinnings, COUNTRIES[pool.country]?.currency)} noted as rolled over. A $3.00 AUD service fee applies, same as creating any syndicate.</p>
+            <Field label="New syndicate name *"><input className={inputCls} placeholder={pool.name} value={rolloverName} onChange={(e) => setRolloverName(e.target.value)} /></Field>
             <Field label="Jackpot estimate for next draw *"><input className={inputCls} inputMode="decimal" placeholder="40,000,000" value={rolloverJackpot} onChange={(e) => setRolloverJackpot(e.target.value.replace(/[^0-9.]/g, ""))} /></Field>
             <Field label="Draw date (optional)"><input type="date" className={inputCls} value={rolloverDrawDate} onChange={(e) => setRolloverDrawDate(e.target.value)} /></Field>
             <Field label="Entry deadline (optional)"><input type="datetime-local" className={inputCls} value={rolloverDeadline} onChange={(e) => setRolloverDeadline(e.target.value)} /></Field>
@@ -4788,8 +4837,8 @@ function Dashboard({ session, code, onBack, onSignIn, isAdmin, onNavigateCode })
 
       {viewingReceiptUrl && (
         <div className="fixed inset-0 z-40 bg-black/90 flex flex-col" onClick={() => setViewingReceiptUrl(null)}>
-          <div className="flex justify-end px-5 pt-6">
-            <button onClick={() => setViewingReceiptUrl(null)} className="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center text-white"><X size={17} /></button>
+          <div className="flex justify-end pl-5 pr-8" style={{ paddingTop: "calc(2.75rem + env(safe-area-inset-top, 0px))" }}>
+            <button onClick={() => setViewingReceiptUrl(null)} className="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center text-white" aria-label="Close"><X size={17} /></button>
           </div>
           <div className="flex-1 flex items-center justify-center px-4" onClick={(e) => e.stopPropagation()}>
             <img src={viewingReceiptUrl} alt="Payment screenshot" className="max-h-full max-w-full rounded-lg object-contain" />
