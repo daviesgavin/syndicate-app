@@ -43,6 +43,7 @@ const COUNTRIES = {
   NZ: { name: "New Zealand", flag: "🇳🇿", currency: "NZD", symbol: "NZ$", routingLabel: null, quickLabel: null },
   CA: { name: "Canada", flag: "🇨🇦", currency: "CAD", symbol: "CA$", routingLabel: "Institution / transit no.", quickLabel: "Interac e-Transfer" },
   IE: { name: "Ireland", flag: "🇮🇪", currency: "EUR", symbol: "€", routingLabel: null, quickLabel: null, usesIban: true },
+  ZA: { name: "South Africa", flag: "🇿🇦", currency: "ZAR", symbol: "R", routingLabel: "Branch code", quickLabel: "PayShap" },
 };
 
 function money(n, currency = "AUD") {
@@ -2714,7 +2715,7 @@ function GuideScreen({ onBack, onCreate, onJoin }) {
 
 const ISO_COUNTRY_NAMES = {
   AU: "Australia", GB: "United Kingdom", US: "United States",
-  NZ: "New Zealand", CA: "Canada", IE: "Ireland",
+  NZ: "New Zealand", CA: "Canada", IE: "Ireland", ZA: "South Africa",
 };
 
 function WinnersTicker({ winners }) {
@@ -3030,7 +3031,7 @@ function Home({ session, onCreate, onJoin, onSignIn, onSignOut, onProfile, onLeg
 
         <div className="flex items-center gap-2 text-[12px] text-[#8FA09B] mb-6">
           <Globe size={13} className="text-[#C9982E] shrink-0" />
-          <span>Now used by groups across Australia, the USA, Canada, England, Scotland, Wales &amp; Ireland</span>
+          <span>Now used by groups across Australia, the USA, Canada, England, Scotland, Wales, Ireland &amp; South Africa</span>
         </div>
 
         <InstallAppButton title="Add app to your phone screen" subtitle="Opens like a regular app, one tap away" prominent />
