@@ -2078,7 +2078,7 @@ const LEGAL_CONTENT = {
       {
         h: "Our fee",
         p: [
-          "A flat service fee of $3 AUD (inclusive of GST where applicable) applies when an organiser creates a syndicate. This fee is charged for access to the Syndicate coordination tool, and is separate from — and never part of — any lottery ticket price or prize money.",
+          "A flat service fee of $2.50 AUD (inclusive of GST where applicable) applies when an organiser creates a syndicate. This fee is charged for access to the Syndicate coordination tool, and is separate from — and never part of — any lottery ticket price or prize money.",
         ],
       },
       { h: "What the fee covers", p: ["Hosting, running, and maintaining the software tool for your syndicate."] },
@@ -2511,7 +2511,7 @@ function AdminScreen({ session, onBack, onOpenSyndicate }) {
 
         <div className="bg-white rounded-2xl p-4 mb-4">
           <div className="flex items-center gap-1.5 text-[#6B7A76] text-[11px] uppercase tracking-wide mb-2"><ShieldCheck size={12} />Free access (bypass Stripe)</div>
-          <p className="text-[12px] text-[#8A968F] mb-3">Paste one or more registered email addresses (comma, space, or newline separated). Anyone on this list skips the $3 fee entirely, for every syndicate they create or roll over.</p>
+          <p className="text-[12px] text-[#8A968F] mb-3">Paste one or more registered email addresses (comma, space, or newline separated). Anyone on this list skips the $2.50 fee entirely, for every syndicate they create or roll over.</p>
           <textarea
             className="w-full text-[13px] rounded-xl border border-[#E5E0D0] px-3 py-2 mb-2 min-h-[70px] font-[JetBrains_Mono]"
             placeholder="friend@example.com, another@example.com"
@@ -3373,12 +3373,12 @@ function CreatePool({ session, onBack, onCreated }) {
         ) : (
           <div className="bg-[#10201D]/5 rounded-xl px-4 py-3 text-[13px] text-[#5B6B67] leading-relaxed mb-6 flex gap-2">
             <Landmark size={16} className="mt-0.5 shrink-0 text-[#5B6B67]" />
-            <span>Creating a syndicate has a one-time $3.00 AUD service fee, paid securely via Stripe. This covers using the app only — never your ticket money.</span>
+            <span>Creating a syndicate has a one-time $2.50 AUD service fee, paid securely via Stripe. This covers using the app only — never your ticket money.</span>
           </div>
         )}
         {error && <div className="flex items-center gap-2 text-[#C1473A] text-[13px] mb-4"><AlertCircle size={15} /> {error}</div>}
         <Button onClick={handlePayAndCreate} disabled={saving} icon={saving ? Loader2 : ArrowRight}>
-          {saving ? (comped ? "Creating…" : "Redirecting to payment…") : (comped ? "Create syndicate (free access)" : "Pay $3 & create syndicate")}
+          {saving ? (comped ? "Creating…" : "Redirecting to payment…") : (comped ? "Create syndicate (free access)" : "Pay $2.50 & create syndicate")}
         </Button>
       </div>
     </Screen>
@@ -4814,7 +4814,7 @@ function Dashboard({ session, code, onBack, onSignIn, isAdmin, onNavigateCode })
           <div className="w-full max-w-[430px] bg-[#F7F2E7] rounded-t-3xl p-6 pb-8 max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="w-10 h-1 rounded-full bg-[#D8D0BC] mx-auto mb-5" />
             <h3 className="font-[Fraunces] text-[19px] text-[#10201D] font-medium mb-1">Roll winnings forward</h3>
-            <p className="text-[13px] text-[#6B7A76] mb-4">Starts a new syndicate with {money(pool.actualWinnings, COUNTRIES[pool.country]?.currency)} noted as rolled over. A $3.00 AUD service fee applies, same as creating any syndicate.</p>
+            <p className="text-[13px] text-[#6B7A76] mb-4">Starts a new syndicate with {money(pool.actualWinnings, COUNTRIES[pool.country]?.currency)} noted as rolled over. A $2.50 AUD service fee applies, same as creating any syndicate.</p>
             <Field label="New syndicate name *"><input className={inputCls} placeholder={pool.name} value={rolloverName} onChange={(e) => setRolloverName(e.target.value)} /></Field>
             <Field label="Jackpot estimate for next draw *"><input className={inputCls} inputMode="decimal" placeholder="40,000,000" value={rolloverJackpot} onChange={(e) => setRolloverJackpot(e.target.value.replace(/[^0-9.]/g, ""))} /></Field>
             <Field label="Draw date (optional)"><input type="date" className={inputCls} value={rolloverDrawDate} onChange={(e) => setRolloverDrawDate(e.target.value)} /></Field>
@@ -4830,7 +4830,7 @@ function Dashboard({ session, code, onBack, onSignIn, isAdmin, onNavigateCode })
             {rolloverError && <div className="flex items-center gap-2 text-[#C1473A] text-[13px] mb-4"><AlertCircle size={15} />{rolloverError}</div>}
             <div className="flex gap-3">
               <Button variant="ghost" onClick={() => setShowRollover(false)}>Cancel</Button>
-              <Button onClick={handleRollover} disabled={!rolloverJackpot || rolloverSaving} icon={rolloverSaving ? Loader2 : ArrowRight}>{rolloverSaving ? "Redirecting…" : "Pay $3 & roll over"}</Button>
+              <Button onClick={handleRollover} disabled={!rolloverJackpot || rolloverSaving} icon={rolloverSaving ? Loader2 : ArrowRight}>{rolloverSaving ? "Redirecting…" : "Pay $2.50 & roll over"}</Button>
             </div>
           </div>
         </div>
