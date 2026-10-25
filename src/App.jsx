@@ -676,7 +676,7 @@ async function loadPool(code) {
 async function loadOwnedPools(ownerId) {
   const { data, error } = await supabase
     .from("syndicates")
-    .select("code,name,rolled_forward_to,entry_deadline,status,actual_winnings,country")
+    .select("code,name,rolled_forward_to,entry_deadline,status,actual_winnings,country,rollover_amount")
     .eq("owner_id", ownerId)
     .is("deleted_at", null)
     .order("created_at", { ascending: false });
@@ -689,6 +689,7 @@ async function loadOwnedPools(ownerId) {
     status: s.status,
     actualWinnings: s.actual_winnings !== null ? Number(s.actual_winnings) : null,
     country: s.country || "AU",
+    rolloverAmount: s.rollover_amount !== null && s.rollover_amount !== undefined ? Number(s.rollover_amount) : null,
   }));
 }
 
@@ -708,10 +709,32 @@ async function loadParticipantAggregates(codes) {
   return aggregates;
 }
 
+// Of the given rolled-over syndicates, which ones carried their members across? Those
+// members' rows already hold the rolled-over winnings, so the rollover amount must not be
+// added on top again. rolloverSyndicate() logs "<name> rolled over $X from <code> …" per
+// carried member, which is the only record of that choice.
+async function loadCarriedRolloverCodes(codes) {
+  if (!codes || codes.length === 0) return new Set();
+  const { data, error } = await supabase
+    .from("activity_log")
+    .select("syndicate_code, message")
+    .in("syndicate_code", codes)
+    .ilike("message", "% rolled over % from %");
+  if (error || !data) return new Set();
+  return new Set(data.filter((r) => !r.message.startsWith("Syndicate rolled over")).map((r) => r.syndicate_code));
+}
+
+// Pool size shown on the home list: members' contributions, plus any rolled-over winnings
+// the pool holds as a group (i.e. not already split into carried-over members' amounts).
+function poolTotalWithRollover(pool, contributions, carriedCodes) {
+  const rollover = pool.rolloverAmount && !carriedCodes.has(pool.code) ? pool.rolloverAmount : 0;
+  return contributions + rollover;
+}
+
 async function loadMemberships(userId) {
   const { data, error } = await supabase
     .from("participants")
-    .select("amount, syndicate:syndicates!inner(code,name,jackpot,status,actual_winnings,deleted_at,rolled_forward_to,entry_deadline,country)")
+    .select("amount, syndicate:syndicates!inner(code,name,jackpot,status,actual_winnings,deleted_at,rolled_forward_to,entry_deadline,country,rollover_amount)")
     .eq("user_id", userId)
     .is("syndicate.deleted_at", null)
     .order("paid_at", { ascending: false });
@@ -728,6 +751,7 @@ async function loadMemberships(userId) {
       rolledForwardTo: r.syndicate.rolled_forward_to,
       entryDeadline: r.syndicate.entry_deadline,
       country: r.syndicate.country || "AU",
+      rolloverAmount: r.syndicate.rollover_amount !== null && r.syndicate.rollover_amount !== undefined ? Number(r.syndicate.rollover_amount) : null,
     }));
 }
 
@@ -1349,6 +1373,33 @@ function Field({ label, children }) {
 }
 
 const inputCls = "w-full rounded-xl border border-[#E1DAC6] bg-white px-4 py-3 text-[15px] text-[#10201D] placeholder-[#A8A08C] focus:outline-none focus:ring-2 focus:ring-[#2F6F5E]/40 focus:border-[#2F6F5E]";
+
+// Date + time as two separate native inputs. iOS's single datetime-local picker nests its
+// time wheel over the calendar popover, where it can cover buttons; separate inputs each
+// open their own small picker. Value stays a "YYYY-MM-DDTHH:MM" string like datetime-local.
+function DateTimeInput({ value, onChange, autoFocus }) {
+  const [datePart, timePart] = (value || "").split("T");
+  const date = datePart || "";
+  const time = (timePart || "").slice(0, 5);
+  return (
+    <div className="grid grid-cols-[3fr_2fr] gap-2">
+      <input
+        type="date"
+        className={inputCls}
+        value={date}
+        autoFocus={autoFocus}
+        onChange={(e) => onChange(e.target.value ? `${e.target.value}T${time || "12:00"}` : "")}
+      />
+      <input
+        type="time"
+        className={`${inputCls} disabled:opacity-50`}
+        value={time}
+        disabled={!date}
+        onChange={(e) => date && onChange(`${date}T${e.target.value || "12:00"}`)}
+      />
+    </div>
+  );
+}
 
 function Stepper({ value, onChange, min = 1, max = 999 }) {
   return (
@@ -3092,16 +3143,20 @@ function Home({ session, onCreate, onJoin, onSignIn, onSignOut, onProfile, onLeg
         // everyone can be flagged as closed) and pool-size totals (shown on each row) in
         // one pass.
         const codes = [...new Set([...owned.map((p) => p.code), ...member.map((m) => m.code)])];
-        const aggregates = await loadParticipantAggregates(codes);
+        const rolloverCodes = [...new Set([...owned, ...member].filter((p) => p.rolloverAmount).map((p) => p.code))];
+        const [aggregates, carriedCodes] = await Promise.all([
+          loadParticipantAggregates(codes),
+          loadCarriedRolloverCodes(rolloverCodes),
+        ]);
         setMyPools(owned.map((p) => ({
           ...p,
           participantCount: aggregates[p.code]?.count || 0,
-          poolTotal: aggregates[p.code]?.total || 0,
+          poolTotal: poolTotalWithRollover(p, aggregates[p.code]?.total || 0, carriedCodes),
         })));
         setMemberships(member.map((m) => ({
           ...m,
           participantCount: aggregates[m.code]?.count || 0,
-          poolTotal: aggregates[m.code]?.total || 0,
+          poolTotal: poolTotalWithRollover(m, aggregates[m.code]?.total || 0, carriedCodes),
         })));
         setProfile(prof);
         setLoading(false);
@@ -3467,7 +3522,7 @@ function CreatePool({ session, onBack, onCreated }) {
         </Field>
         <Field label="Draw date (optional)"><input type="date" className={inputCls} value={drawDate} onChange={(e) => setDrawDate(e.target.value)} /></Field>
         <Field label="Entry deadline (optional)">
-          <input type="datetime-local" className={inputCls} value={entryDeadline} onChange={(e) => setEntryDeadline(e.target.value)} />
+          <DateTimeInput value={entryDeadline} onChange={setEntryDeadline} />
         </Field>
         <div className="bg-[#2F6F5E]/8 rounded-xl px-4 py-3 text-[13px] text-[#3E5652] leading-relaxed mb-4 flex gap-2">
           <ShieldCheck size={16} className="mt-0.5 shrink-0 text-[#2F6F5E]" />
@@ -4955,7 +5010,7 @@ function Dashboard({ session, code, onBack, onSignIn, isAdmin, onNavigateCode })
             <Field label="New syndicate name *"><input className={inputCls} placeholder={pool.name} value={rolloverName} onChange={(e) => setRolloverName(e.target.value)} /></Field>
             <Field label="Jackpot estimate for next draw *"><input className={inputCls} inputMode="decimal" placeholder="40,000,000" value={rolloverJackpot} onChange={(e) => setRolloverJackpot(e.target.value.replace(/[^0-9.]/g, ""))} /></Field>
             <Field label="Draw date (optional)"><input type="date" className={inputCls} value={rolloverDrawDate} onChange={(e) => setRolloverDrawDate(e.target.value)} /></Field>
-            <Field label="Entry deadline (optional)"><input type="datetime-local" className={inputCls} value={rolloverDeadline} onChange={(e) => setRolloverDeadline(e.target.value)} /></Field>
+            <Field label="Entry deadline (optional)"><DateTimeInput value={rolloverDeadline} onChange={setRolloverDeadline} /></Field>
             <label className="flex items-center gap-2.5 mb-5 bg-white rounded-xl px-4 py-3">
               <input type="checkbox" checked={rolloverCarry} onChange={(e) => setRolloverCarry(e.target.checked)} className="w-4 h-4" />
               <span className="text-[13.5px] text-[#3E5652]">Carry over the same members and share percentages</span>
@@ -5254,7 +5309,7 @@ function Dashboard({ session, code, onBack, onSignIn, isAdmin, onNavigateCode })
             <h3 className="font-[Fraunces] text-[19px] text-[#10201D] font-medium mb-1">{pool.entryDeadline ? "Edit entry deadline" : "Add an entry deadline"}</h3>
             <p className="text-[13px] text-[#6B7A76] mb-4">After this time, no one new can join or contribute to this syndicate.</p>
             <Field label="Entry deadline">
-              <input type="datetime-local" className={inputCls} value={deadlineValue} onChange={(e) => setDeadlineValue(e.target.value)} autoFocus />
+              <DateTimeInput value={deadlineValue} onChange={setDeadlineValue} />
             </Field>
             <div className="flex gap-3">
               <Button variant="ghost" onClick={() => setEditingDeadline(false)}>Cancel</Button>
