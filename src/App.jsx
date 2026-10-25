@@ -515,6 +515,26 @@ async function loadActivityLog(code) {
   return data;
 }
 
+// Activity-log lines are plain text keyed by the participant's name (see the logActivity
+// calls above), so a person's history is found by matching the phrasings those calls write.
+function activityForParticipant(entries, name) {
+  if (!entries || !name) return [];
+  return entries.filter((e) => {
+    const m = e.message || "";
+    return (
+      m.startsWith(`${name} topped up:`) ||
+      m.startsWith(`${name} joined and contributed`) ||
+      m.startsWith(`Organiser changed ${name}'s amount`) ||
+      (m.startsWith("Merged duplicate entries") && (m.includes(`"${name}"`) || m.includes(`${name} (`)))
+    );
+  });
+}
+
+function formatActivityTime(iso) {
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "short" }) + " · " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
 async function loadPool(code) {
   const { data: syn, error } = await supabase.from("syndicates").select("*").eq("code", code).is("deleted_at", null).maybeSingle();
   if (error || !syn) return null;
@@ -4071,6 +4091,8 @@ function Dashboard({ session, code, onBack, onSignIn, isAdmin, onNavigateCode })
   const [resultUploading, setResultUploading] = useState(false);
   const [resultUploadError, setResultUploadError] = useState("");
   const [sortMode, setSortMode] = useState("unpaid"); // "unpaid" | "name" | "winnings"
+  const [activity, setActivity] = useState([]); // activity_log rows, shown per person in "Who owes what"
+  const [expandedHistory, setExpandedHistory] = useState(null); // participant id whose full history is open
 
   const [paymentDetails, setPaymentDetails] = useState(null);
   const [bankName, setBankName] = useState("");
@@ -4280,6 +4302,7 @@ function Dashboard({ session, code, onBack, onSignIn, isAdmin, onNavigateCode })
       const p = await loadPool(code);
       setPool(p);
       if (p) {
+        loadActivityLog(code).then(setActivity).catch(() => {});
         const pd = await loadPaymentDetails(code);
         if (pd) {
           setPaymentDetails(pd);
@@ -4735,8 +4758,11 @@ function Dashboard({ session, code, onBack, onSignIn, isAdmin, onNavigateCode })
           {sortedParticipants.map((p) => {
             const share = totalAmount ? (Number(p.amount || 0) / totalAmount) * 100 : 0;
             const winnings = pool.status === "drawn" ? (share / 100) * pool.actualWinnings : (share / 100) * pool.jackpot;
+            const history = activityForParticipant(activity, p.name);
+            const historyOpen = expandedHistory === p.id;
             return (
-              <div key={p.id} className="bg-white rounded-xl px-4 py-3.5 flex items-center gap-3">
+              <div key={p.id} className="bg-white rounded-xl px-4 py-3.5">
+              <div className="flex items-center gap-3">
                 <button onClick={() => togglePaid(p)} className="shrink-0">
                   {p.paid ? <CheckSquare size={22} className="text-[#2F6F5E]" /> : <Square size={22} className="text-[#C1473A]" />}
                 </button>
@@ -4760,6 +4786,25 @@ function Dashboard({ session, code, onBack, onSignIn, isAdmin, onNavigateCode })
                     <button onClick={() => setRemovingParticipant(p)} className="text-[#C1473A] p-1"><UserX size={14} /></button>
                   </div>
                 </div>
+              </div>
+              {history.length > 0 && (
+                <div className="mt-2.5 pt-2.5 border-t border-[#EFEAE0]">
+                  {(historyOpen ? history : history.slice(0, 1)).map((e) => (
+                    <div key={e.id} className="flex items-start gap-2 py-0.5">
+                      <Clock size={11} className="text-[#8A968F] mt-[3px] shrink-0" />
+                      <div className="min-w-0">
+                        <div className="text-[12px] text-[#10201D] leading-snug">{e.message}</div>
+                        <div className="text-[10.5px] text-[#8A968F] font-[JetBrains_Mono]">{formatActivityTime(e.created_at)}</div>
+                      </div>
+                    </div>
+                  ))}
+                  {history.length > 1 && (
+                    <button onClick={() => setExpandedHistory(historyOpen ? null : p.id)} className="text-[11px] text-[#2F6F5E] font-medium mt-1 ml-[19px]">
+                      {historyOpen ? "Show less" : `Show all ${history.length} entries`}
+                    </button>
+                  )}
+                </div>
+              )}
               </div>
             );
           })}
