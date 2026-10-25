@@ -131,21 +131,35 @@ function fitDimensions(pxW, pxH, maxW, maxH) {
   return { w, h };
 }
 
+// Brand palette for the exported PDF (matches the app icon: gold coin on deep green).
+const PDF_COLORS = {
+  ink: [16, 32, 29],        // #10201D
+  green: [47, 111, 94],     // #2F6F5E
+  deep: [15, 31, 26],       // header band, matches icon background
+  gold: [212, 168, 67],     // coin gold
+  cream: [245, 241, 232],   // #F5F1E8 app background
+  muted: [138, 150, 143],   // #8A968F
+  red: [193, 71, 58],       // #C1473A
+  white: [255, 255, 255],
+};
+
 async function addPhotoSectionToPdf(doc, photos, title, marginX) {
   if (!photos || photos.length === 0) return;
   doc.addPage();
-  let y = 20;
+  let y = 22;
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(14);
-  doc.setTextColor(20);
+  doc.setFontSize(15);
+  doc.setTextColor(...PDF_COLORS.ink);
   doc.text(title, marginX, y);
-  y += 10;
+  doc.setFillColor(...PDF_COLORS.gold);
+  doc.rect(marginX, y + 2.5, 24, 1.2, "F");
+  y += 12;
 
   for (const photo of photos) {
     try {
       const { dataUrl, width, height } = await urlToImageData(photo.url);
-      const { w, h } = fitDimensions(width, height, 180, 220);
-      if (y + h > 280) { doc.addPage(); y = 20; }
+      const { w, h } = fitDimensions(width, height, 180, 215);
+      if (y + h > 275) { doc.addPage(); y = 20; }
       const format = dataUrl.includes("image/png") ? "PNG" : "JPEG";
       doc.addImage(dataUrl, format, marginX, y, w, h);
       y += h + 8;
@@ -159,72 +173,150 @@ async function addPhotoSectionToPdf(doc, photos, title, marginX) {
 async function downloadSyndicatePdf(pool) {
   const { jsPDF } = await import("jspdf");
   const doc = new jsPDF();
+  const C = PDF_COLORS;
+  const pageW = 210;
   const marginX = 14;
+  const right = pageW - marginX;
+  const currency = COUNTRIES[pool.country]?.currency;
   const { totalAmount } = totals(pool);
-  let y = 20;
+
+  let logo = null;
+  try { logo = (await urlToImageData("/icon-192.png")).dataUrl; } catch (e) { /* logo is decorative */ }
+
+  // ── Header band ──────────────────────────────────────────────
+  doc.setFillColor(...C.deep);
+  doc.rect(0, 0, pageW, 46, "F");
+  doc.setFillColor(...C.gold);
+  doc.rect(0, 46, pageW, 1.4, "F");
+  if (logo) doc.addImage(logo, "PNG", marginX, 10, 26, 26);
+  const textX = logo ? marginX + 33 : marginX;
 
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(18);
-  doc.text(pool.name, marginX, y);
-  y += 8;
+  doc.setFontSize(8);
+  doc.setTextColor(...C.gold);
+  doc.text("LOTTO SYNDICATE", textX, 15, { charSpace: 0.8 });
+
+  doc.setFontSize(19);
+  doc.setTextColor(...C.white);
+  const title = doc.splitTextToSize(pool.name, right - textX - 30)[0];
+  doc.text(title, textX, 24);
 
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(10);
-  doc.setTextColor(110);
-  doc.text(`Syndicate code: ${pool.code}`, marginX, y);
-  y += 5;
-  doc.text(`Organised by ${pool.organiser}`, marginX, y);
-  y += 5;
-  if (pool.drawDate) {
-    doc.text(`Draw date: ${pool.drawDate}`, marginX, y);
-    y += 5;
-  }
-  y += 4;
+  doc.setFontSize(9);
+  doc.setTextColor(200, 210, 205);
+  const meta = [`Organised by ${pool.organiser}`, pool.drawDate ? `Draw date ${pool.drawDate}` : null].filter(Boolean).join("   ·   ");
+  doc.text(meta, textX, 31.5);
 
-  doc.setTextColor(20);
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(13);
-  doc.text(pool.status === "drawn" ? `Actual winnings: ${money(pool.actualWinnings, COUNTRIES[pool.country]?.currency)}` : `Jackpot estimate: ${money(pool.jackpot, COUNTRIES[pool.country]?.currency)}`, marginX, y);
-  y += 8;
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(10);
-  doc.setTextColor(80);
-  doc.text(`Total pool contributed: ${money(totalAmount, COUNTRIES[pool.country]?.currency)}`, marginX, y);
-  y += 10;
-
+  // syndicate code pill, top right
   doc.setFont("helvetica", "bold");
   doc.setFontSize(10);
-  doc.setTextColor(20);
-  doc.text("Name", marginX, y);
-  doc.text("Amount", 92, y);
-  doc.text("Share %", 122, y);
-  doc.text("Winnings", 150, y);
-  doc.text("Status", 178, y);
-  y += 2;
-  doc.setDrawColor(200);
-  doc.line(marginX, y, 196, y);
-  y += 7;
-
+  const codeW = doc.getTextWidth(pool.code) + 10;
+  doc.setFillColor(...C.gold);
+  doc.roundedRect(right - codeW, 11, codeW, 8, 4, 4, "F");
+  doc.setTextColor(...C.deep);
+  doc.text(pool.code, right - codeW / 2, 16.4, { align: "center" });
   doc.setFont("helvetica", "normal");
-  pool.participants.forEach((p) => {
-    if (y > 275) { doc.addPage(); y = 20; }
+  doc.setFontSize(7);
+  doc.setTextColor(...C.muted);
+  doc.text("SYNDICATE CODE", right - codeW / 2, 23.5, { align: "center" });
+
+  // ── Stat cards ───────────────────────────────────────────────
+  let y = 56;
+  const paidCount = pool.participants.filter((p) => p.paid).length;
+  const stats = [
+    { label: pool.status === "drawn" ? "ACTUAL WINNINGS" : "JACKPOT ESTIMATE", value: money(pool.status === "drawn" ? pool.actualWinnings : pool.jackpot, currency), accent: true },
+    { label: "TOTAL POOL", value: money(totalAmount, currency) },
+    { label: "MEMBERS PAID", value: `${paidCount} / ${pool.participants.length}` },
+  ];
+  const gap = 4;
+  const cardW = (right - marginX - gap * 2) / 3;
+  stats.forEach((st, i) => {
+    const x = marginX + i * (cardW + gap);
+    doc.setFillColor(...(st.accent ? C.green : C.cream));
+    doc.roundedRect(x, y, cardW, 20, 3, 3, "F");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(7);
+    doc.setTextColor(...(st.accent ? C.gold : C.muted));
+    doc.text(st.label, x + 5, y + 7, { charSpace: 0.4 });
+    doc.setFontSize(st.value.length > 16 ? 11 : 13);
+    doc.setTextColor(...(st.accent ? C.white : C.ink));
+    doc.text(st.value, x + 5, y + 15);
+  });
+  y += 30;
+
+  // ── Members table ────────────────────────────────────────────
+  const cols = { name: marginX + 4, amount: 112, share: 136, winnings: 168, status: right - 4 };
+  const drawTableHeader = () => {
+    doc.setFillColor(...C.deep);
+    doc.roundedRect(marginX, y, right - marginX, 9, 2, 2, "F");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(...C.gold);
+    doc.text("MEMBER", cols.name, y + 6);
+    doc.text("AMOUNT", cols.amount, y + 6, { align: "right" });
+    doc.text("SHARE", cols.share, y + 6, { align: "right" });
+    doc.text("WINNINGS", cols.winnings, y + 6, { align: "right" });
+    doc.text("STATUS", cols.status, y + 6, { align: "right" });
+    y += 9;
+  };
+  drawTableHeader();
+
+  const rowH = 7.5;
+  pool.participants.forEach((p, i) => {
+    if (y + rowH > 278) { doc.addPage(); y = 18; drawTableHeader(); }
     const share = totalAmount ? (Number(p.amount || 0) / totalAmount) * 100 : 0;
     const winnings = pool.status === "drawn" ? (share / 100) * pool.actualWinnings : (share / 100) * pool.jackpot;
-    doc.text(displayName(p), marginX, y);
-    doc.text(money(p.amount), 92, y);
-    doc.text(`${share.toFixed(2)}%`, 122, y);
-    doc.text(money(winnings), 150, y);
-    doc.text(p.paid ? "Paid" : "Unpaid", 178, y);
-    y += 7;
-  });
+    if (i % 2 === 1) {
+      doc.setFillColor(...C.cream);
+      doc.rect(marginX, y, right - marginX, rowH, "F");
+    }
+    const ty = y + 5;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(...C.ink);
+    doc.text(doc.splitTextToSize(displayName(p), 84)[0], cols.name, ty);
+    doc.text(money(p.amount, currency), cols.amount, ty, { align: "right" });
+    doc.setTextColor(...C.muted);
+    doc.text(`${share.toFixed(2)}%`, cols.share, ty, { align: "right" });
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(...C.green);
+    doc.text(money(winnings, currency), cols.winnings, ty, { align: "right" });
 
-  doc.setFontSize(8);
-  doc.setTextColor(160);
-  doc.text(`Generated ${new Date().toLocaleString()} · Syndicate app (bank/payment details intentionally excluded)`, marginX, 290);
+    // status pill
+    const label = p.paid ? "PAID" : "UNPAID";
+    doc.setFontSize(6.5);
+    const pillW = doc.getTextWidth(label) + 5;
+    doc.setFillColor(...(p.paid ? C.green : C.red));
+    doc.roundedRect(right - 2 - pillW, y + 1.6, pillW, 4.4, 2.2, 2.2, "F");
+    doc.setTextColor(...C.white);
+    doc.text(label, right - 2 - pillW / 2, y + 4.7, { align: "center" });
+    y += rowH;
+  });
+  doc.setDrawColor(...C.gold);
+  doc.setLineWidth(0.6);
+  doc.line(marginX, y + 1, right, y + 1);
 
   await addPhotoSectionToPdf(doc, pool.ticketPhotos, "Ticket Photos", marginX);
   await addPhotoSectionToPdf(doc, pool.resultPhotos, "Results & Winnings", marginX);
+
+  // ── Footer on every page ─────────────────────────────────────
+  const pages = doc.getNumberOfPages();
+  for (let n = 1; n <= pages; n++) {
+    doc.setPage(n);
+    doc.setDrawColor(225, 220, 208);
+    doc.setLineWidth(0.2);
+    doc.line(marginX, 284, right, 284);
+    if (logo) doc.addImage(logo, "PNG", marginX, 286.5, 5, 5);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(...C.green);
+    doc.text("lottosyndicate.app", marginX + (logo ? 7 : 0), 290);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(...C.muted);
+    doc.text(`Generated ${new Date().toLocaleString()} · bank/payment details intentionally excluded`, pageW / 2, 290, { align: "center" });
+    doc.text(`${n} / ${pages}`, right, 290, { align: "right" });
+  }
 
   const safeName = pool.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
   doc.save(`${safeName}-${pool.code}.pdf`);
