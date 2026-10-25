@@ -567,6 +567,35 @@ async function loadRecentWinners(limit = 12) {
   return data;
 }
 
+// All-time winnings across every drawn syndicate, grouped by currency (pools in different
+// countries can't be added together). Paged because Supabase caps responses at 1,000 rows.
+async function loadAllTimeWinnings() {
+  const PAGE = 1000;
+  const byCurrency = {};
+  let wins = 0;
+  let biggest = null;
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase
+      .from("syndicates")
+      .select("code, actual_winnings, country")
+      .eq("status", "drawn")
+      .gt("actual_winnings", 0)
+      .is("deleted_at", null)
+      .order("code", { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error || !data) return null;
+    data.forEach((r) => {
+      const currency = COUNTRIES[r.country || "AU"]?.currency || "AUD";
+      const amount = Number(r.actual_winnings || 0);
+      byCurrency[currency] = (byCurrency[currency] || 0) + amount;
+      wins += 1;
+      if (currency === "AUD" && (!biggest || amount > biggest)) biggest = amount;
+    });
+    if (data.length < PAGE) break;
+  }
+  return wins ? { byCurrency, wins, biggest } : null;
+}
+
 async function loadApprovedReviews(limit = 20) {
   const { data, error } = await supabase.from("reviews").select("*").eq("approved", true).order("created_at", { ascending: false }).limit(limit);
   if (error || !data) return [];
@@ -698,8 +727,21 @@ async function loadOwnedPools(ownerId) {
 // show a pool-size total on the syndicate list).
 async function loadParticipantAggregates(codes) {
   if (!codes || codes.length === 0) return {};
-  const { data, error } = await supabase.from("participants").select("syndicate_code, amount").in("syndicate_code", codes);
-  if (error || !data) return {};
+  // Supabase caps each response at 1,000 rows, and an organiser with many pools can easily
+  // have more participants than that in total — so page through until a short page.
+  const PAGE = 1000;
+  const data = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data: page, error } = await supabase
+      .from("participants")
+      .select("id, syndicate_code, amount")
+      .in("syndicate_code", codes)
+      .order("id", { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error || !page) return {};
+    data.push(...page);
+    if (page.length < PAGE) break;
+  }
   const aggregates = {};
   data.forEach((r) => {
     if (!aggregates[r.syndicate_code]) aggregates[r.syndicate_code] = { count: 0, total: 0 };
@@ -715,13 +757,19 @@ async function loadParticipantAggregates(codes) {
 // carried member, which is the only record of that choice.
 async function loadCarriedRolloverCodes(codes) {
   if (!codes || codes.length === 0) return new Set();
-  const { data, error } = await supabase
-    .from("activity_log")
-    .select("syndicate_code, message")
-    .in("syndicate_code", codes)
-    .ilike("message", "% rolled over % from %");
-  if (error || !data) return new Set();
-  return new Set(data.filter((r) => !r.message.startsWith("Syndicate rolled over")).map((r) => r.syndicate_code));
+  // One tiny query per pool (limit 1) rather than one query for all pools, which could
+  // return thousands of log rows and be cut off at Supabase's 1,000-row response cap.
+  const results = await Promise.all(codes.map(async (code) => {
+    const { data, error } = await supabase
+      .from("activity_log")
+      .select("id")
+      .eq("syndicate_code", code)
+      .ilike("message", "% rolled over % from %")
+      .not("message", "ilike", "Syndicate rolled over%")
+      .limit(1);
+    return !error && data && data.length > 0 ? code : null;
+  }));
+  return new Set(results.filter(Boolean));
 }
 
 // Pool size shown on the home list: members' contributions, plus any rolled-over winnings
@@ -2881,6 +2929,65 @@ const ISO_COUNTRY_NAMES = {
   NZ: "New Zealand", CA: "Canada", IE: "Ireland", ZA: "South Africa",
 };
 
+function useCountUp(target, durationMs = 1800) {
+  const [value, setValue] = useState(0);
+  useEffect(() => {
+    if (!target) return;
+    const reduce = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    if (reduce) { setValue(target); return; }
+    let raf;
+    const start = performance.now();
+    const tick = (now) => {
+      const t = Math.min(1, (now - start) / durationMs);
+      setValue(target * (1 - Math.pow(1 - t, 3))); // ease-out cubic
+      if (t < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target, durationMs]);
+  return value;
+}
+
+function AllTimeWinnings({ stats }) {
+  const headlineCurrency = stats?.byCurrency?.AUD !== undefined ? "AUD" : Object.keys(stats?.byCurrency || {})[0];
+  const headline = stats ? stats.byCurrency[headlineCurrency] : 0;
+  const shown = useCountUp(headline);
+  if (!stats) return null;
+  const others = Object.entries(stats.byCurrency).filter(([c]) => c !== headlineCurrency);
+  const [whole, cents] = money(shown, headlineCurrency).split(".");
+
+  return (
+    <div
+      className="relative rounded-3xl overflow-hidden mb-3 px-6 pt-6 pb-5 text-center"
+      style={{ background: "radial-gradient(120% 90% at 50% 0%, #2A3A1F 0%, #13221C 55%, #0B1512 100%)", border: "1px solid rgba(201,152,46,0.35)" }}
+    >
+      <style>{`
+        @keyframes totalShine { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+        .total-shine { background: linear-gradient(100deg, #C9982E 20%, #FFF1C9 45%, #F3D08A 55%, #C9982E 80%); background-size: 200% 100%;
+          -webkit-background-clip: text; background-clip: text; color: transparent; animation: totalShine 5s linear infinite; }
+      `}</style>
+      {/* soft glow behind the number */}
+      <div className="absolute left-1/2 -translate-x-1/2 rounded-full pointer-events-none" style={{ top: 30, width: 220, height: 90, background: "#C9982E", opacity: 0.12, filter: "blur(40px)" }} />
+
+      <div className="relative flex items-center justify-center gap-2 text-[#C9982E] text-[11px] font-semibold tracking-[0.18em] uppercase mb-2">
+        <Trophy size={14} /> Won by our syndicates
+      </div>
+      <div className="relative font-[Fraunces] font-medium leading-none total-shine" style={{ fontSize: "clamp(40px, 13vw, 58px)" }}>
+        {whole}<span style={{ fontSize: "0.5em" }}>.{cents}</span>
+      </div>
+      <div className="relative text-[#9FB0AC] text-[13px] mt-3">
+        across <span className="text-[#F3D08A] font-medium">{stats.wins}</span> winning draw{stats.wins === 1 ? "" : "s"}
+        {stats.biggest ? <> · biggest win <span className="text-[#F3D08A] font-medium">{money(stats.biggest, "AUD")}</span></> : null}
+      </div>
+      {others.length > 0 && (
+        <div className="relative text-[#8FA09B] text-[12px] mt-1">
+          plus {others.map(([c, v]) => money(v, c)).join(" · ")} overseas
+        </div>
+      )}
+    </div>
+  );
+}
+
 function WinnersTicker({ winners }) {
   if (!winners || winners.length === 0) return null;
 
@@ -3127,11 +3234,13 @@ function Home({ session, onCreate, onJoin, onSignIn, onSignOut, onProfile, onLeg
   const [loading, setLoading] = useState(!!session);
   const [approvedReviews, setApprovedReviews] = useState([]);
   const [recentWinners, setRecentWinners] = useState([]);
+  const [allTimeWinnings, setAllTimeWinnings] = useState(null);
   const [showContactModal, setShowContactModal] = useState(false);
 
   useEffect(() => {
     loadApprovedReviews(6).then(setApprovedReviews);
     loadRecentWinners(12).then(setRecentWinners);
+    loadAllTimeWinnings().then(setAllTimeWinnings);
   }, []);
 
   useEffect(() => {
@@ -3194,6 +3303,7 @@ function Home({ session, onCreate, onJoin, onSignIn, onSignOut, onProfile, onLeg
           Organise your work lotto pool, collect contributions by link, and know exactly who's owed what the moment the numbers drop.
         </p>
 
+        <AllTimeWinnings stats={allTimeWinnings} />
         <WinnersTicker winners={recentWinners} />
 
         <div className="flex items-center gap-2 text-[12px] text-[#8FA09B] mb-6">
