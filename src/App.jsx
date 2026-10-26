@@ -2486,6 +2486,38 @@ function RevenueCard({ data, loading, error, view, onView, onRefresh }) {
             </div>
           )}
 
+          {data.payers?.length > 0 && (
+            <details className="mt-4 pt-3 border-t border-[#F0EBDC]">
+              <summary className="flex items-center gap-1.5 text-[10.5px] uppercase tracking-wide text-[#8A968F] cursor-pointer select-none">
+                <Users size={11} />People who've paid ({data.payers.length})
+              </summary>
+              <div className="mt-2 divide-y divide-[#F0EBDC]">
+                {data.payers.map((p) => (
+                  <div key={(p.email || p.name) + p.firstPaid} className="py-2">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-[13.5px] text-[#10201D] font-medium truncate">{p.name || "No name given"}</div>
+                        {p.email ? (
+                          <a href={`mailto:${p.email}`} className="block text-[12px] text-[#2F6F5E] underline truncate">{p.email}</a>
+                        ) : (
+                          <div className="text-[12px] text-[#8A968F]">No email</div>
+                        )}
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className="text-[13px] text-[#10201D] font-medium font-[JetBrains_Mono]">{money(p.net, cur)}</div>
+                        <div className="text-[11px] text-[#6B7A76]">{p.payments} payment{p.payments === 1 ? "" : "s"}{p.refunded ? " · refund" : ""}</div>
+                      </div>
+                    </div>
+                    <div className="text-[11px] text-[#8A968F] mt-0.5">
+                      Last paid {new Date(p.lastPaid).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}
+                      {(p.city || p.country) && <> · {p.city || paymentCountryName(p.country)}</>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+
           <p className="text-[10.5px] text-[#8A968F] mt-3 leading-relaxed">
             Weeks start Monday, Perth time. Free/comped syndicates and unfinished checkouts aren't counted.
             {data.mixedCurrencies && " Some payments were in other currencies and are added together as-is."}

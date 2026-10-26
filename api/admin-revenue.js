@@ -92,6 +92,8 @@ export default async function handler(req, res) {
       currencies.add((s.currency || "aud").toUpperCase());
       const md = s.metadata || {};
       payments.push({
+        name: s.customer_details?.name || "",
+        email: s.customer_details?.email || "",
         country: (md.ip_country || charge?.payment_method_details?.card?.country || s.customer_details?.address?.country || "").toUpperCase() || null,
         city: md.ip_city ? [md.ip_city, md.ip_region].filter(Boolean).join(", ") : null,
         created: s.created,
@@ -139,6 +141,40 @@ export default async function handler(req, res) {
       paymentsWithoutCity: noCity,
     };
 
+    // Everyone who has paid, newest first, with their totals.
+    const people = {};
+    for (const p of payments) {
+      const key = p.payer;
+      const person = (people[key] ||= { name: "", email: "", payments: 0, gross: 0, fees: 0, refunds: 0, first: p.created, last: p.created, country: null, city: null });
+      person.payments += 1;
+      person.gross += p.gross;
+      person.fees += p.fee;
+      person.refunds += p.refunded;
+      if (p.created <= person.first) person.first = p.created;
+      if (p.created >= person.last) {
+        person.last = p.created;
+        person.name = p.name || person.name;
+        person.email = p.email || person.email;
+        person.country = p.country || person.country;
+        person.city = p.city || person.city;
+      }
+      if (!person.name && p.name) person.name = p.name;
+      if (!person.email && p.email) person.email = p.email;
+    }
+    const payers = Object.values(people)
+      .sort((a, b) => b.last - a.last)
+      .map((p) => ({
+        name: p.name,
+        email: p.email,
+        payments: p.payments,
+        net: (p.gross - p.fees - p.refunds) / 100,
+        refunded: p.refunds > 0,
+        firstPaid: new Date(p.first * 1000).toISOString(),
+        lastPaid: new Date(p.last * 1000).toISOString(),
+        country: p.country,
+        city: p.city,
+      }));
+
     const nowKeys = keysFor(Math.floor(Date.now() / 1000));
     const series = (period, count) =>
       Object.keys(by[period]).sort().reverse().slice(0, count).map((key) => ({ key, ...finish(by[period][key]) }));
@@ -154,6 +190,7 @@ export default async function handler(req, res) {
       months: series("month", 12),
       years: series("year", 10),
       locations,
+      payers,
       firstPayment: payments.length ? new Date(Math.min(...payments.map((p) => p.created)) * 1000).toISOString() : null,
     });
   } catch (err) {
