@@ -77,7 +77,8 @@ function pageText(html) {
     .replace(/&pound;|&#163;/gi, "£")
     .replace(/&#36;|&dollar;/gi, "$")
     .replace(/&nbsp;|&#160;/gi, " ")
-    .replace(/&#39;|&#x27;|&rsquo;|&apos;/gi, "'")
+    .replace(/&#39;|&#x27;|&rsquo;|&lsquo;|&#8217;|&#8216;|&apos;/gi, "'")
+    .replace(/[\u2018\u2019\u02BC]/g, "'")
     .replace(/&amp;/gi, "&")
     .replace(/\s+/g, " ");
 }
@@ -207,7 +208,7 @@ const SOURCES = {
     url: "https://www.euro-millions.com/",
     schedule: { tz: "Europe/Paris", days: [2, 5], time: "20:45" },
     // e.g. "Tuesday's estimated EuroMillions jackpot: €79 Million"
-    pattern: /(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)'?s?\s+estimated EuroMillions jackpot:?\s*€\s*([\d.,]+)\s*(Million|Billion)/i,
+    pattern: /(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s*'?\s*s?\s+estimated EuroMillions jackpot:?\s*€\s*([\d.,]+)\s*(Million|Billion)/i,
     amountGroup: 2, unitGroup: 3, dayGroup: 1,
   }),
 
@@ -322,6 +323,8 @@ export default async function handler(req, res) {
     const draws = [...fresh, ...carried]
       .map((d) => ({ ...d, jackpot_aud: Math.round(d.jackpot * (rates[d.currency] || 1)) }))
       .sort((a, b) => b.jackpot_aud - a.jackpot_aud);
+
+    console.log("jackpot sources:", JSON.stringify(status));
 
     if (draws.length < MIN_DRAWS) {
       return res.status(502).json({ error: `Only ${draws.length} draws available; kept the previous list`, status });
