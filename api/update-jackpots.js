@@ -122,7 +122,7 @@ function findKey(obj, key) {
 // Reads one jackpot from a page's text and pairs it with the next scheduled draw.
 // If the page names the draw's weekday and it doesn't match the next scheduled draw,
 // the page hasn't been updated since the last draw, so it's skipped rather than shown wrong.
-function pageSource({ lottery, country, currency, url, schedule, pattern, amountGroup, unitGroup, dayGroup, dayPattern, max }) {
+function pageSource({ lottery, country, currency, url, link, schedule, pattern, amountGroup, unitGroup, dayGroup, dayPattern, max }) {
   return async (nowMs) => {
     const html = await fetchText(url);
     const text = pageText(html);
@@ -141,18 +141,7 @@ function pageSource({ lottery, country, currency, url, schedule, pattern, amount
     if (pageDay >= 0 && drawMs && zoneParts(drawMs, schedule.tz).weekday !== pageDay) {
       throw new Error("page still shows the previous draw");
     }
-    return [{ lottery, country, jackpot, currency, draw_time_utc: drawMs && new Date(drawMs).toISOString(), source_url: url }];
-  };
-}
-
-// Tries each source in turn and returns the first that works.
-function firstOf(...sources) {
-  return async (nowMs) => {
-    const errors = [];
-    for (const src of sources) {
-      try { return await src(nowMs); } catch (e) { errors.push(e.message); }
-    }
-    throw new Error(errors.join(" | "));
+    return [{ lottery, country, jackpot, currency, draw_time_utc: drawMs && new Date(drawMs).toISOString(), source_url: link || url }];
   };
 }
 
@@ -189,7 +178,6 @@ const SOURCES = {
       { id: "Powerball", lottery: "Powerball", time: "20:30" },
       { id: "OzLotto", lottery: "Oz Lotto", time: "20:30" },
       { id: "TattsLotto", lottery: "Saturday Lotto", time: "19:30" },
-      { id: "MonWedLotto", lottery: "Mon & Wed Lotto", time: "20:30" },
     ];
     const endpoints = [
       "https://data.api.thelott.com/sales/vmax/web/data/lotto/opendraws",
@@ -229,61 +217,116 @@ const SOURCES = {
     return draws;
   },
 
-  "EuroMillions": firstOf(
-  pageSource({
-    lottery: "EuroMillions", country: "EU", currency: "EUR",
-    url: "https://www.lottery.ie/",
-    schedule: { tz: "Europe/Paris", days: [2, 5], time: "20:45" },
-    // Irish National Lottery home page, e.g. "EuroMillions ... Next draw €80 Million*"
-    pattern: /EuroMillions(?!\s*Plus)[\s\S]{0,150}?Next draw:?\s*€\s*([\d.,]+)\s*(Million|Billion)/i,
-    amountGroup: 1, unitGroup: 2,
-  }),
-  pageSource({
-    lottery: "EuroMillions", country: "EU", currency: "EUR",
-    url: "https://www.euro-millions.com/",
-    schedule: { tz: "Europe/Paris", days: [2, 5], time: "20:45" },
-    // e.g. "Tuesday's estimated EuroMillions jackpot: €79 Million"
-    pattern: /(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s*'?\s*s?\s+estimated EuroMillions jackpot:?\s*€\s*([\d.,]+)\s*(Million|Billion)/i,
-    amountGroup: 2, unitGroup: 3, dayGroup: 1,
-  })),
+  // Irish National Lottery (official): the page embeds its game data as JSON, with each
+  // game's next draw time and jackpot in cents. Gives us EuroMillions and Irish Lotto.
+  "lottery.ie (EuroMillions, Irish Lotto)": async (nowMs) => {
+    const url = "https://www.lottery.ie/";
+    const html = await fetchText(url);
+    const m = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+    if (!m) throw new Error("embedded game data not found (site may have changed)");
+    const data = JSON.parse(m[1]);
 
-  "Irish Lotto": pageSource({
-    lottery: "Irish Lotto", country: "IE", currency: "EUR",
-    url: "https://www.lottery.ie/",
-    schedule: { tz: "Europe/Dublin", days: [3, 6], time: "20:00" },
-    // e.g. "Lotto ... Next draw €3.6 Million*" (but not "EuroMillions", "Lotto Plus" or "Daily Million")
-    pattern: /(?<![A-Za-z])Lotto(?!\s*Plus)[\s\S]{0,150}?Next draw:?\s*€\s*([\d.,]+)\s*(Million|Billion)/i,
-    amountGroup: 1, unitGroup: 2, max: 50e6,
+    const games = {};
+    (function walk(o) {
+      if (!o || typeof o !== "object") return;
+      if (typeof o.contentid === "string" && Array.isArray(o.jackpotInfo) && !games[o.contentid]) games[o.contentid] = o.jackpotInfo;
+      for (const v of Object.values(o)) walk(v);
+    })(data);
+
+    const wanted = [
+      { id: "euromillions", lottery: "EuroMillions", country: "EU" },
+      { id: "lotto", lottery: "Irish Lotto", country: "IE" },
+    ];
+    const draws = [];
+    const notes = [];
+    for (const w of wanted) {
+      const next = (games[w.id] || [])
+        .filter((j) => Date.parse(j.nextDrawDate) > nowMs && Number(j.amount) > 0)
+        .sort((a, b) => Date.parse(a.nextDrawDate) - Date.parse(b.nextDrawDate))[0];
+      if (!next) { notes.push(`${w.lottery}: no upcoming jackpot listed`); continue; }
+      draws.push({
+        lottery: w.lottery, country: w.country, currency: "EUR",
+        jackpot: Math.round(Number(next.amount) / 100), // cents -> euros
+        draw_time_utc: new Date(Date.parse(next.nextDrawDate)).toISOString(),
+        source_url: url,
+      });
+    }
+    if (!draws.length) throw new Error(notes.join("; ") || "no games found");
+    draws.notes = notes;
+    return draws;
+  },
+
+  // UK National Lottery (official): the Lotto page embeds its jackpot card data, with the
+  // jackpot in pence and the time ticket sales close (the draw is ~30 minutes later).
+  "UK Lotto": async (nowMs) => {
+    const url = "https://www.national-lottery.co.uk/games/lotto";
+    const html = (await fetchText(url)).replace(/\\+"/g, '"'); // the data is JSON inside escaped strings
+    const jackpot = html.match(/"jackpot"\s*:\s*"(\d+)"/);
+    const sellEnd = html.match(/"sellEndDate"\s*:\s*"([^"]+)"/);
+    if (!jackpot || !sellEnd) throw new Error("embedded jackpot data not found (site may have changed)");
+    const drawMs = Date.parse(sellEnd[1]) + 30 * 60000;
+    if (!(drawMs > nowMs)) throw new Error("page still shows the previous draw");
+    return [{
+      lottery: "UK Lotto", country: "UK", currency: "GBP",
+      jackpot: Math.round(Number(jackpot[1]) / 100), // pence -> pounds
+      draw_time_utc: new Date(drawMs).toISOString(),
+      source_url: url,
+    }];
+  },
+
+  // Lotto NZ (official): its public content feed carries the Powerball jackpot banner,
+  // e.g. "Powerball jackpot amount is $5 million this Wednesday."
+  "NZ Powerball": pageSource({
+    lottery: "Powerball", country: "NZ", currency: "NZD",
+    url: "https://pathway.mylotto.co.nz/api/content/pages/home",
+    link: "https://mylotto.co.nz/",
+    schedule: { tz: "Pacific/Auckland", days: [3, 6], time: "20:00" },
+    pattern: /Powerball jackpot amount is \$\s?([\d.,]+)\s*(million|billion)\s*this\s*(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)/i,
+    amountGroup: 1, unitGroup: 2, dayGroup: 3, max: 200e6,
   }),
 
-  "UK Lotto": pageSource({
-    lottery: "UK Lotto", country: "UK", currency: "GBP",
-    url: "https://www.national-lottery.co.uk/games/lotto",
-    schedule: { tz: "Europe/London", days: [3, 6], time: "20:00" },
-    // e.g. "Don't miss Wednesday 's £9 Million* jackpot"
-    pattern: /(?:(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s*'?\s*s?\s*)?(?:estimated\s*)?£\s*([\d.,]+)\s*(Million|Billion)\*?\s*(?:Lotto\s*)?jackpot/i,
-    amountGroup: 2, unitGroup: 3, dayGroup: 1, max: 100e6,
-  }),
-
-  "EuroJackpot": pageSource({
-    lottery: "EuroJackpot", country: "EU", currency: "EUR",
-    url: "https://www.eurojackpot.org/en/",
-    schedule: { tz: "Europe/Berlin", days: [2, 5], time: "20:00" },
-    // e.g. "NEXT JACKPOT 17.000.000 €"  (or "17 Mio. €")
-    pattern: /NEXT JACKPOT\s*€?\s*([\d.,]+)\s*(Mio\.?|Million|Billion)?\s*€?/i,
-    amountGroup: 1, unitGroup: 2,
-    dayPattern: /Next official draw:?\s*(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)/i,
-  }),
+  // Western Canada Lottery Corporation (official): labelled jackpot boxes for
+  // Lotto Max and Lotto 6/49 (Gold Ball jackpot), each with its draw date.
+  "Canada (WCLC)": async (nowMs) => {
+    const url = "https://www.wclc.com/home.htm";
+    const html = await fetchText(url);
+    const games = [
+      { lottery: "Lotto Max", start: "nextJackpotDetailsLmax", end: "end next jackpot details lmax" },
+      { lottery: "Lotto 6/49 Gold Ball", start: "nextJackpotDetailsL649", end: "end next jackpot details l649" },
+    ];
+    const draws = [];
+    const notes = [];
+    for (const g of games) {
+      const a = html.indexOf(g.start);
+      const b = a >= 0 ? html.indexOf(g.end, a) : -1;
+      const block = a >= 0 ? html.slice(a, b > a ? b : a + 4000) : "";
+      const amt = block.match(/nextJackpotPrizeAmount">\s*([\d.,]+)\s*</);
+      const unit = block.match(/nextJackpotAmountMillion">\s*(Million|Billion)/i);
+      const date = block.match(/nextJackpotDateDate">\s*[A-Za-z]+,\s*([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})/);
+      const month = date && ["january","february","march","april","may","june","july","august","september","october","november","december"].indexOf(date[1].toLowerCase()) + 1;
+      if (!amt || !unit || !month) { notes.push(`${g.lottery}: jackpot box not found`); continue; }
+      const drawMs = zonedToUtc(+date[3], month, +date[2], 22, 30, "America/Toronto");
+      draws.push({
+        lottery: g.lottery, country: "CA", currency: "CAD",
+        jackpot: parseAmount(amt[1], unit[1]),
+        draw_time_utc: new Date(drawMs).toISOString(),
+        source_url: "https://www.wclc.com/",
+      });
+    }
+    if (!draws.length) throw new Error(notes.join("; "));
+    draws.notes = notes;
+    return draws;
+  },
 };
 
 /* ---------------- currency conversion (for sorting only) ---------------- */
 
-const FALLBACK_AUD_PER_UNIT = { AUD: 1, USD: 1.52, EUR: 1.65, GBP: 1.95 };
+const FALLBACK_AUD_PER_UNIT = { AUD: 1, USD: 1.52, EUR: 1.65, GBP: 1.95, NZD: 0.91, CAD: 1.1, ZAR: 0.085 };
 
 async function audRates() {
   try {
     // Free European Central Bank rates, no key needed.
-    const data = JSON.parse(await fetchText("https://api.frankfurter.app/latest?from=AUD&to=USD,EUR,GBP"));
+    const data = JSON.parse(await fetchText("https://api.frankfurter.app/latest?from=AUD&to=USD,EUR,GBP,NZD,CAD"));
     const rates = { AUD: 1 };
     for (const [cur, perAud] of Object.entries(data.rates || {})) if (perAud > 0) rates[cur] = 1 / perAud;
     return { ...FALLBACK_AUD_PER_UNIT, ...rates };
