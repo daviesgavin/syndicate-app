@@ -3113,7 +3113,7 @@ function BigDraws({ snapshot, onCreate }) {
 
   if (!snapshot?.draws?.length) return null;
   // Draws that have already happened drop off on their own, even if a daily update is missed.
-  const upcoming = snapshot.draws.filter((d) => new Date(d.draw_time_utc).getTime() > now).slice(0, 5);
+  const upcoming = snapshot.draws.filter((d) => new Date(d.draw_time_utc).getTime() > now).slice(0, 12);
   if (upcoming.length < 2) return null;
 
   function startFor(d) {

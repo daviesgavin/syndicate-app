@@ -58,11 +58,17 @@ function nextDraw(schedule, nowMs) {
 /* ---------------- parsing helpers ---------------- */
 
 async function fetchText(url, init = {}) {
-  const res = await fetch(url, {
-    ...init,
-    headers: { "User-Agent": UA, Accept: "text/html,application/json,*/*", ...(init.headers || {}) },
-    signal: AbortSignal.timeout(15000),
-  });
+  let res;
+  try {
+    res = await fetch(url, {
+      ...init,
+      headers: { "User-Agent": UA, Accept: "text/html,application/json,*/*", ...(init.headers || {}) },
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (e) {
+    const why = e.cause?.code || e.cause?.message || e.name;
+    throw new Error(`could not reach ${new URL(url).hostname}${why ? ` (${why})` : ""}`);
+  }
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.text();
 }
@@ -116,12 +122,13 @@ function findKey(obj, key) {
 // Reads one jackpot from a page's text and pairs it with the next scheduled draw.
 // If the page names the draw's weekday and it doesn't match the next scheduled draw,
 // the page hasn't been updated since the last draw, so it's skipped rather than shown wrong.
-function pageSource({ lottery, country, currency, url, schedule, pattern, amountGroup, unitGroup, dayGroup, dayPattern }) {
+function pageSource({ lottery, country, currency, url, schedule, pattern, amountGroup, unitGroup, dayGroup, dayPattern, max }) {
   return async (nowMs) => {
     const text = pageText(await fetchText(url));
     const m = text.match(pattern);
     if (!m) throw new Error("jackpot text not found (page layout may have changed)");
     const jackpot = parseAmount(m[amountGroup], unitGroup ? m[unitGroup] : "");
+    if (max && jackpot > max) throw new Error("matched a figure that's too big — likely the wrong game");
     const drawMs = nextDraw(schedule, nowMs);
     let pageDay = dayGroup ? weekdayIndex(m[dayGroup]) : -1;
     if (pageDay < 0 && dayPattern) pageDay = weekdayIndex(text.match(dayPattern)?.[1]);
@@ -129,6 +136,17 @@ function pageSource({ lottery, country, currency, url, schedule, pattern, amount
       throw new Error("page still shows the previous draw");
     }
     return [{ lottery, country, jackpot, currency, draw_time_utc: drawMs && new Date(drawMs).toISOString(), source_url: url }];
+  };
+}
+
+// Tries each source in turn and returns the first that works.
+function firstOf(...sources) {
+  return async (nowMs) => {
+    const errors = [];
+    for (const src of sources) {
+      try { return await src(nowMs); } catch (e) { errors.push(e.message); }
+    }
+    throw new Error(errors.join(" | "));
   };
 }
 
@@ -165,6 +183,7 @@ const SOURCES = {
       { id: "Powerball", lottery: "Powerball", time: "20:30" },
       { id: "OzLotto", lottery: "Oz Lotto", time: "20:30" },
       { id: "TattsLotto", lottery: "Saturday Lotto", time: "19:30" },
+      { id: "MonWedLotto", lottery: "Mon & Wed Lotto", time: "20:30" },
     ];
     const endpoints = [
       "https://data.api.thelott.com/sales/vmax/web/data/lotto/opendraws",
@@ -203,13 +222,31 @@ const SOURCES = {
     return draws;
   },
 
-  "EuroMillions": pageSource({
+  "EuroMillions": firstOf(
+  pageSource({
+    lottery: "EuroMillions", country: "EU", currency: "EUR",
+    url: "https://www.lottery.ie/",
+    schedule: { tz: "Europe/Paris", days: [2, 5], time: "20:45" },
+    // Irish National Lottery home page, e.g. "EuroMillions ... Next draw €80 Million*"
+    pattern: /EuroMillions(?!\s*Plus)[\s\S]{0,150}?Next draw:?\s*€\s*([\d.,]+)\s*(Million|Billion)/i,
+    amountGroup: 1, unitGroup: 2,
+  }),
+  pageSource({
     lottery: "EuroMillions", country: "EU", currency: "EUR",
     url: "https://www.euro-millions.com/",
     schedule: { tz: "Europe/Paris", days: [2, 5], time: "20:45" },
     // e.g. "Tuesday's estimated EuroMillions jackpot: €79 Million"
     pattern: /(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s*'?\s*s?\s+estimated EuroMillions jackpot:?\s*€\s*([\d.,]+)\s*(Million|Billion)/i,
     amountGroup: 2, unitGroup: 3, dayGroup: 1,
+  })),
+
+  "Irish Lotto": pageSource({
+    lottery: "Irish Lotto", country: "IE", currency: "EUR",
+    url: "https://www.lottery.ie/",
+    schedule: { tz: "Europe/Dublin", days: [3, 6], time: "20:00" },
+    // e.g. "Lotto ... Next draw €3.6 Million*" (but not "EuroMillions", "Lotto Plus" or "Daily Million")
+    pattern: /(?<![A-Za-z])Lotto(?!\s*Plus)[\s\S]{0,150}?Next draw:?\s*€\s*([\d.,]+)\s*(Million|Billion)/i,
+    amountGroup: 1, unitGroup: 2, max: 50e6,
   }),
 
   "UK Lotto": pageSource({
@@ -217,8 +254,8 @@ const SOURCES = {
     url: "https://www.national-lottery.co.uk/games/lotto",
     schedule: { tz: "Europe/London", days: [3, 6], time: "20:00" },
     // e.g. "Don't miss Wednesday 's £9 Million* jackpot"
-    pattern: /(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s*'?\s*s?\s*£\s*([\d.,]+)\s*(Million|Billion)\*?\s*jackpot/i,
-    amountGroup: 2, unitGroup: 3, dayGroup: 1,
+    pattern: /(?:(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s*'?\s*s?\s*)?(?:estimated\s*)?£\s*([\d.,]+)\s*(Million|Billion)\*?\s*(?:Lotto\s*)?jackpot/i,
+    amountGroup: 2, unitGroup: 3, dayGroup: 1, max: 100e6,
   }),
 
   "EuroJackpot": pageSource({
