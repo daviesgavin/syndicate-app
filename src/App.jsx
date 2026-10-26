@@ -6,7 +6,7 @@ import {
   Ticket, Users, Copy, Check, ArrowRight, ArrowLeft, PlusCircle, ImageOff, LogOut, HardDrive, MapPin, Mail, Star, Globe,
   TrendingUp, Trophy, Clock, Share2, Loader2, ShieldCheck,
   AlertCircle, ChevronRight, Sparkles, ImagePlus, X, Images, Eye, RefreshCw,
-  LogIn, Lock, MessageCircle, Send, UserCircle, CheckSquare, Square, Trash2, Landmark, Download, PlusSquare, Smartphone, Pencil, UserX, BookOpen, UserPlus
+  LogIn, Lock, MessageCircle, Send, UserCircle, CheckSquare, Square, Trash2, Landmark, Download, PlusSquare, Smartphone, Pencil, UserX, BookOpen, UserPlus, ExternalLink
 } from "lucide-react";
 
 // Custom URL scheme registered in Xcode (Target -> Info -> URL Types) so magic-link
@@ -564,6 +564,18 @@ async function loadRecentWinners(limit = 12) {
     .order("draw_date", { ascending: false })
     .limit(limit);
   if (error || !data) return [];
+  return data;
+}
+
+// Newest list of big upcoming draws, refreshed daily by /api/update-jackpots.
+async function loadBigDraws() {
+  const { data, error } = await supabase
+    .from("big_draws_snapshots")
+    .select("fetched_at, draws")
+    .order("fetched_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error || !data) return null;
   return data;
 }
 
@@ -3045,6 +3057,130 @@ function WinnersTicker({ winners }) {
   );
 }
 
+/* ---------------------------------------------------------
+   This week's big draws (Home) — data refreshed daily by /api/update-jackpots
+--------------------------------------------------------- */
+
+function currencySymbol(currency) {
+  const known = Object.values(COUNTRIES).find((c) => c.currency === currency)?.symbol;
+  if (known) return known;
+  try {
+    return new Intl.NumberFormat("en", { style: "currency", currency, currencyDisplay: "narrowSymbol" })
+      .formatToParts(0).find((p) => p.type === "currency")?.value || `${currency} `;
+  } catch (e) {
+    return `${currency} `;
+  }
+}
+
+// 977000000 USD -> "US$977M", 1250000000 -> "US$1.25B", 26500000 EUR -> "€26.5M"
+function formatJackpot(amount, currency) {
+  const sym = currencySymbol(currency);
+  const trim = (n) => String(Number(n.toFixed(2)));
+  if (amount >= 1e9) return `${sym}${trim(amount / 1e9)}B`;
+  if (amount >= 1e6) return `${sym}${trim(amount / 1e6)}M`;
+  return `${sym}${Math.round(amount).toLocaleString("en-US")}`;
+}
+
+function drawFlag(country) {
+  if (country === "EU") return "🇪🇺";
+  if (COUNTRIES[country]) return COUNTRIES[country].flag;
+  const code = country === "UK" ? "GB" : country;
+  if (!/^[A-Z]{2}$/.test(code)) return "🎟️";
+  return String.fromCodePoint(...[...code].map((ch) => 0x1f1e6 + ch.charCodeAt(0) - 65));
+}
+
+function updatedAgo(iso) {
+  const hrs = Math.floor((Date.now() - new Date(iso).getTime()) / 3600000);
+  if (hrs < 1) return "just now";
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+// Date as "YYYY-MM-DDTHH:mm" in the viewer's own time zone, the format CreatePool uses.
+function toLocalInputValue(iso) {
+  const d = new Date(iso);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function BigDraws({ snapshot, onCreate }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 60000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (!snapshot?.draws?.length) return null;
+  // Draws that have already happened drop off on their own, even if a daily update is missed.
+  const upcoming = snapshot.draws.filter((d) => new Date(d.draw_time_utc).getTime() > now).slice(0, 5);
+  if (upcoming.length < 2) return null;
+
+  function startFor(d) {
+    try {
+      const existing = JSON.parse(localStorage.getItem("pendingSyndicate") || "null") || {};
+      localStorage.setItem("pendingSyndicate", JSON.stringify({
+        organiser: existing.organiser || "",
+        name: `${d.lottery} syndicate`,
+        jackpot: d.jackpot,
+        drawDate: toLocalInputValue(d.draw_time_utc),
+        country: COUNTRIES[d.country] ? d.country : existing.country || "AU",
+      }));
+    } catch (e) {}
+    onCreate();
+  }
+
+  return (
+    <div className="mb-6">
+      <div className="flex items-center justify-between mb-2.5">
+        <div className="flex items-center gap-1.5 text-[12px] uppercase tracking-wide text-[#C9982E]">
+          <TrendingUp size={13} /> This week's big draws
+        </div>
+        <div className="text-[10.5px] text-[#6B7A76]">Updated {updatedAgo(snapshot.fetched_at)}</div>
+      </div>
+
+      <div className="rounded-2xl overflow-hidden border border-[#C9982E]/25 bg-white/[0.04] divide-y divide-white/[0.06]">
+        {upcoming.map((d) => {
+          const msLeft = new Date(d.draw_time_utc).getTime() - now;
+          const drawDay = new Date(d.draw_time_utc).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+          return (
+            <div key={`${d.lottery}-${d.country}`} className="flex items-center">
+              <button
+                onClick={() => startFor(d)}
+                className="flex-1 min-w-0 flex items-center gap-3 px-4 py-3 text-left hover:bg-white/[0.05]"
+              >
+                <span className="text-[20px] leading-none shrink-0">{drawFlag(d.country)}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-[#F7F2E7] text-[14px] font-medium truncate">{d.lottery}</div>
+                  <div className="text-[11.5px] text-[#7C8C88]">
+                    {drawDay} · <span className={msLeft < 864e5 ? "text-[#E0A04A]" : ""}>{formatCompactCountdown(msLeft)} to go</span>
+                  </div>
+                </div>
+                <div className="font-[Fraunces] text-[19px] font-semibold text-[#F3D08A] shrink-0">
+                  {formatJackpot(d.jackpot, d.currency)}
+                </div>
+              </button>
+              <a
+                href={d.source_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label={`Official ${d.lottery} site`}
+                className="px-3 py-3 text-[#5B6862] hover:text-[#C9982E] shrink-0"
+              >
+                <ExternalLink size={13} />
+              </a>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="text-[11px] text-[#6B7A76] mt-2 leading-snug">
+        Tap a draw to start a syndicate for it. Jackpots are estimates — always check the official site before buying tickets.
+      </div>
+    </div>
+  );
+}
+
 function ContactModal({ onClose }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -3235,12 +3371,14 @@ function Home({ session, onCreate, onJoin, onSignIn, onSignOut, onProfile, onLeg
   const [approvedReviews, setApprovedReviews] = useState([]);
   const [recentWinners, setRecentWinners] = useState([]);
   const [allTimeWinnings, setAllTimeWinnings] = useState(null);
+  const [bigDraws, setBigDraws] = useState(null);
   const [showContactModal, setShowContactModal] = useState(false);
 
   useEffect(() => {
     loadApprovedReviews(6).then(setApprovedReviews);
     loadRecentWinners(12).then(setRecentWinners);
     loadAllTimeWinnings().then(setAllTimeWinnings);
+    loadBigDraws().then(setBigDraws);
   }, []);
 
   useEffect(() => {
@@ -3305,6 +3443,7 @@ function Home({ session, onCreate, onJoin, onSignIn, onSignOut, onProfile, onLeg
 
         <AllTimeWinnings stats={allTimeWinnings} />
         <WinnersTicker winners={recentWinners} />
+        <BigDraws snapshot={bigDraws} onCreate={onCreate} />
 
         <div className="flex items-center gap-2 text-[12px] text-[#8FA09B] mb-6">
           <Globe size={13} className="text-[#C9982E] shrink-0" />

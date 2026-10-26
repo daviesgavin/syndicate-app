@@ -1,0 +1,8 @@
+{
+  "crons": [
+    { "path": "/api/update-jackpots", "schedule": "0 21 * * *" }
+  ],
+  "functions": {
+    "api/update-jackpots.js": { "maxDuration": 300 }
+  }
+}
