@@ -2378,6 +2378,11 @@ function revenuePeriodLabel(view, key) {
   return `Week of ${new Date(Date.UTC(y, m - 1, d)).toLocaleDateString(undefined, { day: "numeric", month: "short", timeZone: "UTC" })}`;
 }
 
+function paymentCountryName(code) {
+  if (ISO_COUNTRY_NAMES[code]) return ISO_COUNTRY_NAMES[code];
+  try { return new Intl.DisplayNames(["en"], { type: "region" }).of(code) || code; } catch (e) { return code; }
+}
+
 function RevenueCard({ data, loading, error, view, onView, onRefresh }) {
   const cur = data?.currency || "AUD";
   const rows = data ? data[view] || [] : [];
@@ -2442,6 +2447,42 @@ function RevenueCard({ data, loading, error, view, onView, onRefresh }) {
                   <span className="text-right w-[84px] text-[#10201D] font-medium font-[JetBrains_Mono] text-[12px]">{money(r.net, cur)}</span>
                 </div>
               ))}
+            </div>
+          )}
+
+          {data.locations?.countries?.length > 0 && (
+            <div className="mt-4 pt-3 border-t border-[#F0EBDC]">
+              <div className="flex items-center gap-1.5 text-[10.5px] uppercase tracking-wide text-[#8A968F] mb-1.5"><MapPin size={11} />Paying customers by country</div>
+              <div className="space-y-1 mb-3">
+                {data.locations.countries.map((c) => (
+                  <div key={c.code} className="grid grid-cols-[1fr_auto_auto] gap-3 items-center text-[13px]">
+                    <span className="text-[#10201D] truncate">
+                      {c.code === "??" ? "Unknown" : <>{drawFlag(c.code)} {paymentCountryName(c.code)}</>}
+                    </span>
+                    <span className="text-right text-[#6B7A76] font-[JetBrains_Mono] text-[12px]">{c.payers} {c.payers === 1 ? "person" : "people"}</span>
+                    <span className="text-right w-[84px] text-[#10201D] font-medium font-[JetBrains_Mono] text-[12px]">{money(c.net, cur)}</span>
+                  </div>
+                ))}
+              </div>
+              {data.locations.cities.length > 0 && (
+                <>
+                  <div className="text-[10.5px] uppercase tracking-wide text-[#8A968F] mb-1.5">Top cities</div>
+                  <div className="space-y-1">
+                    {data.locations.cities.map((c) => (
+                      <div key={`${c.name}-${c.country}`} className="grid grid-cols-[1fr_auto_auto] gap-3 items-center text-[12.5px]">
+                        <span className="text-[#3E5652] truncate">{c.name}{c.country !== "??" ? `, ${c.country}` : ""}</span>
+                        <span className="text-right text-[#8A968F] font-[JetBrains_Mono] text-[12px]">{c.payments}</span>
+                        <span className="text-right w-[84px] text-[#3E5652] font-[JetBrains_Mono] text-[12px]">{money(c.net, cur)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+              {data.locations.paymentsWithoutCity > 0 && (
+                <p className="text-[10.5px] text-[#8A968F] mt-2 leading-relaxed">
+                  {data.locations.paymentsWithoutCity} earlier payment{data.locations.paymentsWithoutCity === 1 ? " has" : "s have"} a country (from the card) but no city — cities are recorded from 26 Oct 2026 onward.
+                </p>
+              )}
             </div>
           )}
 

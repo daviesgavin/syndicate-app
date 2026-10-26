@@ -2,6 +2,10 @@
 // weeks, months, years and all time (Perth time). Reads straight from Stripe, so the
 // figures always match your Stripe account — including Stripe's fees and any refunds.
 //
+// Locations: country comes from where the payer was when they paid (recorded at checkout
+// from Vercel's IP geo headers), falling back to the card's issuing country or billing
+// address for payments made before that was added. Cities exist only for newer payments.
+//
 // Only completed, paid Checkout sessions count (abandoned checkouts and free/comped
 // syndicates don't). No new env vars needed: uses STRIPE_SECRET_KEY and the same
 // admin check as the email stats.
@@ -86,7 +90,10 @@ export default async function handler(req, res) {
       const charge = s.payment_intent?.latest_charge;
       const bt = charge?.balance_transaction;
       currencies.add((s.currency || "aud").toUpperCase());
+      const md = s.metadata || {};
       payments.push({
+        country: (md.ip_country || charge?.payment_method_details?.card?.country || s.customer_details?.address?.country || "").toUpperCase() || null,
+        city: md.ip_city ? [md.ip_city, md.ip_region].filter(Boolean).join(", ") : null,
         created: s.created,
         gross: s.amount_total,
         fee: bt && typeof bt === "object" ? bt.fee : 0,
@@ -107,6 +114,31 @@ export default async function handler(req, res) {
       }
     }
 
+    // Where paying customers are (all time).
+    const byCountry = {};
+    const byCity = {};
+    let noCity = 0;
+    for (const p of payments) {
+      const c = p.country || "??";
+      byCountry[c] ||= emptyBucket();
+      add(byCountry[c], p);
+      if (p.city) {
+        const key = `${p.city}|${c}`;
+        byCity[key] ||= emptyBucket();
+        add(byCity[key], p);
+      } else noCity += 1;
+    }
+    const locations = {
+      countries: Object.entries(byCountry)
+        .map(([code, b]) => ({ code, ...finish(b) }))
+        .sort((a, b) => b.net - a.net || b.payments - a.payments),
+      cities: Object.entries(byCity)
+        .map(([key, b]) => ({ name: key.split("|")[0], country: key.split("|")[1], ...finish(b) }))
+        .sort((a, b) => b.net - a.net || b.payments - a.payments)
+        .slice(0, 15),
+      paymentsWithoutCity: noCity,
+    };
+
     const nowKeys = keysFor(Math.floor(Date.now() / 1000));
     const series = (period, count) =>
       Object.keys(by[period]).sort().reverse().slice(0, count).map((key) => ({ key, ...finish(by[period][key]) }));
@@ -121,6 +153,7 @@ export default async function handler(req, res) {
       weeks: series("week", 12),
       months: series("month", 12),
       years: series("year", 10),
+      locations,
       firstPayment: payments.length ? new Date(Math.min(...payments.map((p) => p.created)) * 1000).toISOString() : null,
     });
   } catch (err) {
