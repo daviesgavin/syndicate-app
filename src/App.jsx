@@ -2364,6 +2364,97 @@ const GUIDE_STEPS = [
   },
 ];
 
+/* ---------------------------------------------------------
+   Admin — revenue from Stripe (data from /api/admin-revenue)
+--------------------------------------------------------- */
+
+function revenuePeriodLabel(view, key) {
+  if (view === "years") return key;
+  if (view === "months") {
+    const [y, m] = key.split("-").map(Number);
+    return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString(undefined, { month: "short", year: "numeric", timeZone: "UTC" });
+  }
+  const [y, m, d] = key.split("-").map(Number);
+  return `Week of ${new Date(Date.UTC(y, m - 1, d)).toLocaleDateString(undefined, { day: "numeric", month: "short", timeZone: "UTC" })}`;
+}
+
+function RevenueCard({ data, loading, error, view, onView, onRefresh }) {
+  const cur = data?.currency || "AUD";
+  const rows = data ? data[view] || [] : [];
+  return (
+    <div className="bg-white rounded-2xl p-4 mb-4">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-1.5 text-[#6B7A76] text-[11px] uppercase tracking-wide"><TrendingUp size={12} />Money made (from Stripe)</div>
+        <button onClick={onRefresh} disabled={loading} className="text-[#6B7A76]" aria-label="Refresh revenue">
+          <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
+        </button>
+      </div>
+
+      {loading && !data ? (
+        <div className="flex items-center gap-2 text-[13px] text-[#8A968F]"><Loader2 size={14} className="animate-spin" />Loading…</div>
+      ) : error ? (
+        <div className="text-[13px] text-[#C1473A]">{error}</div>
+      ) : data && (
+        <>
+          <div className="bg-[#10201D] rounded-xl p-3 mb-2">
+            <div className="text-[10.5px] uppercase tracking-wide text-[#C9982E] mb-1">All time · after Stripe fees</div>
+            <div className="font-[Fraunces] text-[24px] text-white font-medium leading-none mb-1.5">{money(data.allTime.net, cur)}</div>
+            <div className="text-[10.5px] text-[#A8A08C] leading-relaxed">
+              {data.allTime.payments} payment{data.allTime.payments === 1 ? "" : "s"} from {data.allTime.payers} {data.allTime.payers === 1 ? "person" : "people"}
+              {" · "}{money(data.allTime.gross, cur)} charged, {money(data.allTime.fees, cur)} fees
+              {data.allTime.refunds > 0 && <>, {money(data.allTime.refunds, cur)} refunded</>}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2 mb-3">
+            {[["This week", data.thisWeek], ["This month", data.thisMonth], ["This year", data.thisYear]].map(([label, s]) => (
+              <div key={label} className="bg-[#F7F2E7] rounded-xl p-3">
+                <div className="text-[10.5px] uppercase tracking-wide text-[#8A968F] mb-1">{label}</div>
+                <div className="font-[Fraunces] text-[17px] text-[#10201D] font-medium leading-none mb-1">{money(s.net, cur)}</div>
+                <div className="text-[10.5px] text-[#6B7A76]">{s.payments} paid · {s.payers} {s.payers === 1 ? "person" : "people"}</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex gap-1 bg-[#F7F2E7] rounded-lg p-1 mb-2">
+            {[["weeks", "Weeks"], ["months", "Months"], ["years", "Years"]].map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => onView(key)}
+                className={`flex-1 text-[12px] py-1.5 rounded-md ${view === key ? "bg-white text-[#10201D] font-medium shadow-sm" : "text-[#6B7A76]"}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {rows.length === 0 ? (
+            <p className="text-[12.5px] text-[#8A968F] py-2">No payments yet.</p>
+          ) : (
+            <div className="divide-y divide-[#F0EBDC]">
+              <div className="grid grid-cols-[1fr_auto_auto] gap-3 text-[10.5px] uppercase tracking-wide text-[#8A968F] pb-1.5">
+                <span>Period</span><span className="text-right">Paid</span><span className="text-right w-[84px]">Net</span>
+              </div>
+              {rows.map((r) => (
+                <div key={r.key} className="grid grid-cols-[1fr_auto_auto] gap-3 items-center py-1.5 text-[13px]">
+                  <span className="text-[#10201D]">{revenuePeriodLabel(view, r.key)}</span>
+                  <span className="text-right text-[#6B7A76] font-[JetBrains_Mono] text-[12px]">{r.payments}</span>
+                  <span className="text-right w-[84px] text-[#10201D] font-medium font-[JetBrains_Mono] text-[12px]">{money(r.net, cur)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <p className="text-[10.5px] text-[#8A968F] mt-3 leading-relaxed">
+            Weeks start Monday, Perth time. Free/comped syndicates and unfinished checkouts aren't counted.
+            {data.mixedCurrencies && " Some payments were in other currencies and are added together as-is."}
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
 function AdminScreen({ session, onBack, onOpenSyndicate }) {
   const [stats, setStats] = useState(null);
   const [syndicates, setSyndicates] = useState([]);
@@ -2376,6 +2467,10 @@ function AdminScreen({ session, onBack, onOpenSyndicate }) {
   const [emailStats, setEmailStats] = useState(null);
   const [emailStatsError, setEmailStatsError] = useState("");
   const [emailStatsLoading, setEmailStatsLoading] = useState(true);
+  const [revenue, setRevenue] = useState(null);
+  const [revenueError, setRevenueError] = useState("");
+  const [revenueLoading, setRevenueLoading] = useState(true);
+  const [revenueView, setRevenueView] = useState("weeks");
   const [visitorStats, setVisitorStats] = useState(null);
   const [visitorLocations, setVisitorLocations] = useState(null);
   const [storageUsage, setStorageUsage] = useState(null);
@@ -2544,6 +2639,25 @@ function AdminScreen({ session, onBack, onOpenSyndicate }) {
     loadEmailStats();
   }, [session]);
 
+  const loadRevenue = useCallback(async () => {
+    setRevenueLoading(true);
+    setRevenueError("");
+    try {
+      const res = await fetch("/api/admin-revenue", {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Couldn't load revenue.");
+      setRevenue(data);
+    } catch (e) {
+      setRevenueError(e.message || "Couldn't load revenue.");
+    } finally {
+      setRevenueLoading(false);
+    }
+  }, [session]);
+
+  useEffect(() => { loadRevenue(); }, [loadRevenue]);
+
   async function handleSearch() {
     const c = searchCode.trim().toUpperCase();
     if (!c) return;
@@ -2576,6 +2690,15 @@ function AdminScreen({ session, onBack, onOpenSyndicate }) {
     <Screen>
       <TopBar title="Admin" onBack={onBack} right={<button onClick={refresh} className="text-[#6B7A76]"><RefreshCw size={16} className={loading ? "animate-spin" : ""} /></button>} />
       <div className="flex-1 px-6 pb-10">
+        <RevenueCard
+          data={revenue}
+          loading={revenueLoading}
+          error={revenueError}
+          view={revenueView}
+          onView={setRevenueView}
+          onRefresh={loadRevenue}
+        />
+
         <div className="bg-white rounded-2xl p-4 mb-4">
           <div className="flex items-center gap-1.5 text-[#6B7A76] text-[11px] uppercase tracking-wide mb-3"><Users size={12} />Visitor traffic</div>
           {!visitorStats ? (
