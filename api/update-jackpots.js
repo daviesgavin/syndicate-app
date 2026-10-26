@@ -124,9 +124,15 @@ function findKey(obj, key) {
 // the page hasn't been updated since the last draw, so it's skipped rather than shown wrong.
 function pageSource({ lottery, country, currency, url, schedule, pattern, amountGroup, unitGroup, dayGroup, dayPattern, max }) {
   return async (nowMs) => {
-    const text = pageText(await fetchText(url));
+    const html = await fetchText(url);
+    const text = pageText(html);
     const m = text.match(pattern);
-    if (!m) throw new Error("jackpot text not found (page layout may have changed)");
+    if (!m) {
+      // Show a little of what the page actually contained, to make fixing it quick.
+      const at = text.search(/jackpot|million|€|£/i);
+      const snippet = at >= 0 ? text.slice(Math.max(0, at - 80), at + 120) : text.slice(0, 160);
+      throw new Error(`jackpot text not found — page was ${html.length} chars, text sample: "${snippet.trim()}"`);
+    }
     const jackpot = parseAmount(m[amountGroup], unitGroup ? m[unitGroup] : "");
     if (max && jackpot > max) throw new Error("matched a figure that's too big — likely the wrong game");
     const drawMs = nextDraw(schedule, nowMs);
@@ -219,6 +225,7 @@ const SOURCES = {
       draws.push({ lottery: p.lottery, country: "AU", jackpot: Math.round(d.Div1Amount), currency: "AUD", draw_time_utc: new Date(drawMs).toISOString(), source_url: "https://www.thelott.com/" });
     });
     if (!draws.length) throw new Error(errors.join("; ") || "no draws");
+    draws.notes = errors;
     return draws;
   },
 
@@ -346,7 +353,8 @@ export default async function handler(req, res) {
       if (r.status === "fulfilled") {
         const good = r.value.filter((d) => isValid(d, nowMs));
         fresh.push(...good);
-        status[names[i]] = good.length ? `ok (${good.map((d) => d.lottery).join(", ")})` : "skipped: figures looked wrong";
+        status[names[i]] = (good.length ? `ok (${good.map((d) => d.lottery).join(", ")})` : "skipped: figures looked wrong")
+          + (r.value.notes?.length ? ` — not available: ${r.value.notes.join("; ")}` : "");
       } else {
         status[names[i]] = `skipped: ${r.reason?.message || r.reason}`;
       }
